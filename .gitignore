@@ -1,0 +1,51 @@
+# ============================================================
+# Traqo - .gitignore
+# ============================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# --- Virtual environment ---
+.venv/
+venv/
+env/
+
+# --- Large generated data (regenerate via setup_traqo.py) ---
+daily_10yr/
+enriched_v2/
+intraday_15min_v2/
+rag_documents_v2/
+charts/
+
+# --- Archive (old/deprecated code) ---
+archive/
+
+# --- Runtime / user-specific ---
+paper_trades/
+feedback/
+models/
+paper_trader_stderr.txt
+
+# --- Session notes ---
+SESSION_STATE_*.md
+
+# --- IDE ---
+.vscode/
+.idea/
+
+# --- OS ---
+Thumbs.db
+.DS_Store
+
+# --- Backtest result caches (regenerate via backtest_walkforward.py) ---
+backtest_walkforward_results.json
+backtest_rolling_results.json
+backtest_ab_results.json
+meta_classifier_results.json

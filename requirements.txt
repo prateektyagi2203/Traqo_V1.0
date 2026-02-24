@@ -1,0 +1,44 @@
+# ============================================================
+# Traqo — Requirements
+# ============================================================
+# Core dependencies only (no transitive sub-deps).
+# Install:  pip install -r requirements.txt
+
+# --- Data & Finance ---
+yfinance>=1.2
+pandas>=2.2
+numpy>=2.0
+
+# --- Technical Analysis ---
+ta>=0.11
+
+# --- ML / Stats ---
+xgboost>=3.0
+scikit-learn>=1.6
+scipy>=1.14
+
+# --- RAG / Embeddings ---
+sentence-transformers>=5.0
+chromadb>=1.0
+langchain>=1.0
+langchain-community>=0.4
+langchain-text-splitters>=1.0
+
+# --- Visualization ---
+matplotlib>=3.9
+
+# --- Book Parsing (optional — only for rebuild from PDFs) ---
+PyMuPDF>=1.27
+beautifulsoup4>=4.13
+
+# --- LLM (Ollama) ---
+ollama>=0.4
+
+# --- Web Dashboard (app_ollama.py uses Streamlit) ---
+streamlit>=1.40
+Flask>=3.1
+
+# --- Utilities ---
+tqdm>=4.66
+python-dateutil>=2.9
+requests>=2.32
