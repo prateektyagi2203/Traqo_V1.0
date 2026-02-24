@@ -1,0 +1,113 @@
+{
+  "critical": [
+    {
+      "key": "nison_jcct",
+      "title": "Japanese Candlestick Charting Techniques 2nd edition 2001.pdf",
+      "total_pages": 298,
+      "relevant_pages": 0,
+      "highly_relevant": 0
+    },
+    {
+      "key": "nison_beyond",
+      "title": "Beyond Candlesticks - New Japanese Charting Techniques Revealed 1994.pdf",
+      "total_pages": 277,
+      "relevant_pages": 205,
+      "highly_relevant": 129
+    },
+    {
+      "key": "nison_course",
+      "title": "The Candlestick Course 2003.pdf",
+      "total_pages": 225,
+      "relevant_pages": 0,
+      "highly_relevant": 0
+    },
+    {
+      "key": "morris_explained",
+      "title": "Candlestick Charting Explained 3rd edition 2006.pdf",
+      "total_pages": 552,
+      "relevant_pages": 511,
+      "highly_relevant": 326
+    },
+    {
+      "key": "bulkowski_encyclopedia",
+      "title": "Encyclopedia of Chart Patterns 2nd edition 2005.pdf",
+      "total_pages": 1035,
+      "relevant_pages": 988,
+      "highly_relevant": 182
+    },
+    {
+      "key": "candlestick_pivots",
+      "title": "Candlestick and Pivot Point Trading Triggers - Setups for Stock, Forex, and Futures Markets CDR edition 2006.pdf",
+      "total_pages": 369,
+      "relevant_pages": 320,
+      "highly_relevant": 100
+    }
+  ],
+  "high_value": [
+    {
+      "key": "volume_price",
+      "title": "A Complete Guide To Volume Price Analysis 2013.pdf",
+      "total_pages": 157,
+      "relevant_pages": 133,
+      "highly_relevant": 24
+    },
+    {
+      "key": "price_action_5min",
+      "title": "Understanding Price Action - Practical Analysis of the 5-Minute Time Frame 2014.pdf",
+      "total_pages": 438,
+      "relevant_pages": 359,
+      "highly_relevant": 8
+    },
+    {
+      "key": "high_prob_strategies",
+      "title": "High Probability Trading Strategies - Entry to Exit Tactics for the Forex, Futures, and Stock Markets 2008.pdf",
+      "total_pages": 290,
+      "relevant_pages": 228,
+      "highly_relevant": 73
+    },
+    {
+      "key": "trade_what_you_see",
+      "title": "Trade What You See - How To Profit from Pattern Recognition 2007.pdf",
+      "total_pages": 225,
+      "relevant_pages": 152,
+      "highly_relevant": 28
+    },
+    {
+      "key": "murphy_ta",
+      "title": "Technical Analysis of the Financial Markets - A Comprehensive Guide to Trading Methods and Applications 1999.pdf",
+      "total_pages": 585,
+      "relevant_pages": 0,
+      "highly_relevant": 0
+    },
+    {
+      "key": "candlestick_getting_started",
+      "title": "Getting Started in Candlestick Charting 2008.pdf",
+      "total_pages": 276,
+      "relevant_pages": 235,
+      "highly_relevant": 137
+    },
+    {
+      "key": "candlestick_dummies",
+      "title": "Candlestick Charting For Dummies 2008.pdf",
+      "total_pages": 365,
+      "relevant_pages": 322,
+      "highly_relevant": 227
+    }
+  ],
+  "nice_to_have": [
+    {
+      "key": "trading_zone",
+      "title": "Trading in the Zone - Master the Market with Confidence, Discipline and a Winning Attitude 2000.pdf",
+      "total_pages": 144,
+      "relevant_pages": 82,
+      "highly_relevant": 0
+    },
+    {
+      "key": "elder_trading",
+      "title": "The New Trading for a Living - Psychology, Discipline, Trading Tools and Systems, Risk Control, Trade Management 2014.pdf",
+      "total_pages": 303,
+      "relevant_pages": 237,
+      "highly_relevant": 3
+    }
+  ]
+}
