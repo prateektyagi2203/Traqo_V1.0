@@ -17,9 +17,51 @@ import webbrowser
 import subprocess
 import urllib.parse
 import threading
+import logging
 from datetime import date, datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
+
+try:
+    import yfinance as yf
+    _HAS_YF = True
+except ImportError:
+    _HAS_YF = False
+
+# ---- Market Cap classification (based on index membership) ----
+_LARGECAP_TICKERS = {
+    "RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS", "BHARTIARTL", "SBIN", "LT",
+    "BAJFINANCE", "AXISBANK", "KOTAKBANK", "ITC", "HINDUNILVR", "MARUTI", "TATAMOTORS",
+    "HCLTECH", "SUNPHARMA", "TITAN", "ADANIENT", "WIPRO", "TATASTEEL", "M&M", "NTPC",
+    "POWERGRID", "ULTRACEMCO", "ASIANPAINT", "BAJAJFINSV", "COALINDIA", "NESTLEIND",
+    "JSWSTEEL", "GRASIM", "ONGC", "DIVISLAB", "DRREDDY", "CIPLA", "APOLLOHOSP",
+    "HEROMOTOCO", "EICHERMOT", "BPCL", "TECHM", "TATACONSUM", "BRITANNIA", "HINDALCO",
+    "INDUSINDBK", "SBILIFE", "HDFCLIFE", "BAJAJ-AUTO", "ADANIPORTS", "SHRIRAMFIN",
+    "ETERNAL", "TRENT",
+    # Nifty Next 50
+    "ABB", "ACC", "ADANIGREEN", "ADANIPOWER", "AMBUJACEM", "ATGL", "AUROPHARMA",
+    "BAJAJHLDNG", "BANKBARODA", "BEL", "BERGEPAINT", "BIOCON", "BOSCHLTD", "CANBK",
+    "CHOLAFIN", "COLPAL", "DABUR", "DLF", "GAIL", "GODREJCP", "HAL", "HAVELLS",
+    "ICICIPRULI", "INDIGO", "IOC", "IRCTC", "IRFC", "JINDALSTEL", "JIOFIN", "LICI",
+    "LTIM", "LTTS", "LUPIN", "MAXHEALTH", "MOTHERSON", "NAUKRI", "NHPC", "OBEROIRLTY",
+    "OFSS", "PAYTM", "PFC", "PIDILITIND", "PNB", "POLYCAB", "RECLTD", "SBICARD",
+    "SIEMENS", "SRF", "TATAPOWER",
+}
+
+def _get_cap(ticker: str) -> str:
+    """Return LargeCap / MidCap based on index membership."""
+    base = ticker.replace(".NS", "").replace(".BO", "").upper()
+    return "LargeCap" if base in _LARGECAP_TICKERS else "MidCap"
+
+_SECTOR_DISPLAY = {
+    "auto": "Auto", "banking": "Banking", "capital_goods": "Capital Goods",
+    "chemicals": "Chemicals", "consumer": "Consumer", "consumer_tech": "Consumer Tech",
+    "energy": "Energy", "finance": "Finance", "fmcg": "FMCG", "it": "IT",
+    "metals": "Metals", "pharma": "Pharma", "realty": "Realty", "unknown": "Other",
+    "": "Other",
+}
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = "paper_trades/paper_trades.db"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -283,6 +325,60 @@ def _days_between(a, b):
         return 0
 
 
+# ============================================================
+# LIVE PRICE FETCH
+# ============================================================
+def fetch_live_prices(tickers: list) -> dict:
+    """Fetch current prices for a list of NSE tickers via yfinance.
+    Returns {ticker_raw: price} dict. Non-blocking best-effort."""
+    import pandas as pd
+    prices = {}
+    if not _HAS_YF or not tickers:
+        print(f"[LIVE PRICE] Skipped: _HAS_YF={_HAS_YF}, tickers={len(tickers) if tickers else 0}")
+        return prices
+    # Build unique Yahoo symbols — tickers may already have .NS/.BO suffix
+    unique = list(set(tickers))
+    yf_syms = []
+    for t in unique:
+        sym = t.strip()
+        if not sym.endswith(".NS") and not sym.endswith(".BO"):
+            sym = sym + ".NS"
+        yf_syms.append(sym)
+    print(f"[LIVE PRICE] Fetching {len(yf_syms)} tickers: {yf_syms[:5]}...")
+    try:
+        data = yf.download(yf_syms, period="5d", interval="1d", progress=False, threads=True)
+        if data is None:
+            print("[LIVE PRICE] yf.download returned None")
+            return prices
+        if data.empty:
+            print("[LIVE PRICE] yf.download returned empty DataFrame")
+            return prices
+        print(f"[LIVE PRICE] Got data shape={data.shape}, columns type={type(data.columns).__name__}")
+        # yfinance 1.2+ always returns MultiIndex columns: (Price, Ticker)
+        if isinstance(data.columns, pd.MultiIndex):
+            close_df = data["Close"]
+            print(f"[LIVE PRICE] Close columns: {list(close_df.columns)}")
+            for raw_t, yf_t in zip(unique, yf_syms):
+                try:
+                    if yf_t in close_df.columns:
+                        series = close_df[yf_t].dropna()
+                        if not series.empty:
+                            prices[raw_t] = float(series.iloc[-1])
+                except Exception as ex:
+                    print(f"[LIVE PRICE] Error parsing {yf_t}: {ex}")
+        else:
+            # Fallback for older yfinance (single ticker, flat columns)
+            print(f"[LIVE PRICE] Flat columns: {list(data.columns)}")
+            if "Close" in data.columns and not data["Close"].dropna().empty:
+                prices[unique[0]] = float(data["Close"].dropna().iloc[-1])
+        print(f"[LIVE PRICE] Got prices for {len(prices)}/{len(unique)} tickers")
+    except Exception as e:
+        print(f"[LIVE PRICE] Exception: {e}")
+        import traceback
+        traceback.print_exc()
+    return prices
+
+
 def _status_classes(s):
     m = {
         "OPEN": ("bg-blue-50 text-blue-700 border-blue-200", "Open"),
@@ -459,27 +555,126 @@ def render_dashboard():
     for t in open_trades:
         tk = _ticker(t["ticker"])
         if tk not in by_stock:
-            by_stock[tk] = {"count": 0, "direction": t["direction"]}
+            raw_sector = (t.get("sector") or "").strip()
+            by_stock[tk] = {
+                "count": 0,
+                "direction": t["direction"],
+                "cap": _get_cap(t["ticker"]),
+                "sector": _SECTOR_DISPLAY.get(raw_sector, raw_sector.title() if raw_sector else "Other"),
+            }
         by_stock[tk]["count"] += 1
 
     stocks_html = ""
     if by_stock:
+        # Collect unique caps and sectors for filter buttons
+        all_caps = sorted(set(info["cap"] for info in by_stock.values()))
+        all_sectors = sorted(set(info["sector"] for info in by_stock.values()))
+
+        cap_buttons = ''.join(
+            f'<button onclick="filterDashStocks(\'cap\', \'{c}\')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-group="cap" data-value="{c}">{c}</button>'
+            for c in all_caps
+        )
+        sector_buttons = ''.join(
+            f'<button onclick="filterDashStocks(\'sector\', \'{_e(s)}\')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-group="sector" data-value="{_e(s)}">{_e(s)}</button>'
+            for s in all_sectors
+        )
+
         stock_chips = ""
         for tk, info in sorted(by_stock.items()):
             dir_badge = badge("↑", "bullish") if info["direction"] == "BULLISH" else badge("↓", "bearish")
+            cap_color = "bg-blue-50 text-blue-600" if info["cap"] == "LargeCap" else "bg-purple-50 text-purple-600"
             stock_chips += f'''
-            <div class="rounded-lg bg-white border border-gray-200 p-3 hover:border-blue-300 transition shadow-sm">
+            <div class="dash-stock-chip rounded-lg bg-white border border-gray-200 p-3 hover:border-blue-300 transition shadow-sm"
+                 data-cap="{_e(info['cap'])}" data-sector="{_e(info['sector'])}" data-stock="{_e(tk)}">
               <div class="flex items-center justify-between">
                 <span class="text-sm font-semibold text-gray-800">{_e(tk)}</span>
                 {dir_badge}
               </div>
               <p class="text-xs text-gray-400 mt-1">{info["count"]} active trade{"s" if info["count"] > 1 else ""}</p>
+              <div class="flex items-center gap-1.5 mt-2">
+                <span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium {cap_color}">{info["cap"]}</span>
+                <span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-500">{_e(info["sector"])}</span>
+              </div>
             </div>'''
+
         stocks_html = f'''
         <div class="glass rounded-xl p-6 mt-6">
-          <h3 class="text-lg font-semibold text-gray-800 mb-4">Open Positions by Stock</h3>
-          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">{stock_chips}</div>
-        </div>'''
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-gray-800">Open Positions by Stock</h3>
+            <span id="dashStockCount" class="text-xs text-gray-400">{len(by_stock)} stocks</span>
+          </div>
+          <!-- Sort & Filter Bar -->
+          <div class="mb-4 space-y-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-xs font-medium text-gray-500 w-12">Sort:</span>
+              <button onclick="sortDashStocks('alpha')" class="dash-sort-btn px-3 py-1 rounded-full text-xs font-medium border border-blue-400 bg-blue-50 text-blue-600 transition" data-sort="alpha">A→Z</button>
+              <button onclick="sortDashStocks('alpha-desc')" class="dash-sort-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-sort="alpha-desc">Z→A</button>
+              <button onclick="sortDashStocks('trades')" class="dash-sort-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-sort="trades">Most Trades</button>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-xs font-medium text-gray-500 w-12">Cap:</span>
+              <button onclick="filterDashStocks('cap', 'All')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-blue-400 bg-blue-50 text-blue-600 transition" data-group="cap" data-value="All">All</button>
+              {cap_buttons}
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-xs font-medium text-gray-500 w-12">Sector:</span>
+              <button onclick="filterDashStocks('sector', 'All')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-blue-400 bg-blue-50 text-blue-600 transition" data-group="sector" data-value="All">All</button>
+              {sector_buttons}
+            </div>
+          </div>
+          <div id="dashStockGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">{stock_chips}</div>
+        </div>
+        <script>
+        (function() {{
+          let activeCap = 'All', activeSector = 'All';
+          window.filterDashStocks = function(group, value) {{
+            if (group === 'cap') activeCap = value;
+            if (group === 'sector') activeSector = value;
+            // Update button styles
+            document.querySelectorAll('.dash-filter-btn[data-group="'+group+'"]').forEach(b => {{
+              if (b.dataset.value === value) {{
+                b.className = b.className.replace('border-gray-200 bg-white text-gray-600','').replace('border-blue-400 bg-blue-50 text-blue-600','') + ' border-blue-400 bg-blue-50 text-blue-600';
+              }} else {{
+                b.className = b.className.replace('border-blue-400 bg-blue-50 text-blue-600','').replace('border-gray-200 bg-white text-gray-600','') + ' border-gray-200 bg-white text-gray-600';
+              }}
+            }});
+            applyDashFilters();
+          }};
+          window.sortDashStocks = function(mode) {{
+            const grid = document.getElementById('dashStockGrid');
+            const chips = Array.from(grid.querySelectorAll('.dash-stock-chip'));
+            chips.sort((a, b) => {{
+              if (mode === 'alpha') return a.dataset.stock.localeCompare(b.dataset.stock);
+              if (mode === 'alpha-desc') return b.dataset.stock.localeCompare(a.dataset.stock);
+              if (mode === 'trades') {{
+                const ca = parseInt(a.querySelector('.text-gray-400').textContent);
+                const cb = parseInt(b.querySelector('.text-gray-400').textContent);
+                return cb - ca;
+              }}
+              return 0;
+            }});
+            chips.forEach(c => grid.appendChild(c));
+            // Update sort button styles
+            document.querySelectorAll('.dash-sort-btn').forEach(b => {{
+              if (b.dataset.sort === mode) {{
+                b.className = b.className.replace('border-gray-200 bg-white text-gray-600','').replace('border-blue-400 bg-blue-50 text-blue-600','') + ' border-blue-400 bg-blue-50 text-blue-600';
+              }} else {{
+                b.className = b.className.replace('border-blue-400 bg-blue-50 text-blue-600','').replace('border-gray-200 bg-white text-gray-600','') + ' border-gray-200 bg-white text-gray-600';
+              }}
+            }});
+          }};
+          function applyDashFilters() {{
+            let shown = 0;
+            document.querySelectorAll('.dash-stock-chip').forEach(c => {{
+              const capMatch = activeCap === 'All' || c.dataset.cap === activeCap;
+              const secMatch = activeSector === 'All' || c.dataset.sector === activeSector;
+              if (capMatch && secMatch) {{ c.style.display = ''; shown++; }}
+              else {{ c.style.display = 'none'; }}
+            }});
+            document.getElementById('dashStockCount').textContent = shown + ' of ' + document.querySelectorAll('.dash-stock-chip').length + ' stocks';
+          }}
+        }})();
+        </script>'''
 
     body = f'''
     <div class="flex items-center justify-between mb-6">
@@ -585,6 +780,11 @@ def render_positions():
     trades = q_open_trades()
     today_str = date.today().isoformat()
 
+    # Fetch live prices for all open tickers
+    tickers_raw = [t["ticker"] for t in trades if t.get("ticker")]
+    live_prices = fetch_live_prices(tickers_raw)
+    price_ts = datetime.now().strftime("%H:%M")
+
     cards = ""
     if not trades:
         cards = '''<div class="flex flex-col items-center justify-center py-16 text-center">
@@ -605,18 +805,88 @@ def render_positions():
             conf_v = "success" if t.get("confidence") == "HIGH" else "warning" if t.get("confidence") == "MEDIUM" else "danger"
             patterns_display = (t.get("patterns") or "").replace(",", " · ")
 
+            # ---- Live price & P&L computation ----
+            cur_price = live_prices.get(t["ticker"])
+            entry_p = t["entry_price"] or 0
+            target_p = t["target_price"] or 0
+            sl_p = t["sl_price"] or 0
+            is_bull = t["direction"] == "BULLISH"
+
+            if cur_price and entry_p:
+                pnl_pct = (cur_price - entry_p) / entry_p * 100
+                if not is_bull:
+                    pnl_pct = -pnl_pct  # bearish: profit when price drops
+                pnl_sign = "+" if pnl_pct >= 0 else ""
+                pnl_color = "text-emerald-600" if pnl_pct >= 0 else "text-red-600"
+                pnl_bg = "bg-emerald-50" if pnl_pct >= 0 else "bg-red-50"
+
+                # Distance gauge: where is cur_price between SL and Target?
+                if is_bull:
+                    total_range = target_p - sl_p if target_p != sl_p else 1
+                    position_in_range = (cur_price - sl_p) / total_range * 100
+                    dist_to_target = ((target_p - cur_price) / cur_price * 100) if cur_price else 0
+                    dist_to_sl = ((cur_price - sl_p) / cur_price * 100) if cur_price else 0
+                else:
+                    total_range = sl_p - target_p if sl_p != target_p else 1
+                    position_in_range = (sl_p - cur_price) / total_range * 100
+                    dist_to_target = ((cur_price - target_p) / cur_price * 100) if cur_price else 0
+                    dist_to_sl = ((sl_p - cur_price) / cur_price * 100) if cur_price else 0
+                position_in_range = max(0, min(100, position_in_range))
+
+                # Gauge bar color based on position
+                if position_in_range >= 70:
+                    gauge_color = "bg-emerald-500"  # near target
+                elif position_in_range >= 30:
+                    gauge_color = "bg-amber-400"    # mid-range
+                else:
+                    gauge_color = "bg-red-500"      # near SL
+
+                live_price_html = f'''
+                <div class="rounded-lg {pnl_bg} border border-gray-100 p-3 mb-4">
+                  <div class="flex items-center justify-between mb-2">
+                    <div>
+                      <p class="text-[10px] uppercase tracking-wider text-gray-400 mb-0.5">Current Price</p>
+                      <p class="text-lg font-mono font-bold {pnl_color}">{_price(cur_price)}</p>
+                    </div>
+                    <div class="text-right">
+                      <p class="text-[10px] uppercase tracking-wider text-gray-400 mb-0.5">Unrealized P&L</p>
+                      <p class="text-lg font-bold {pnl_color}">{pnl_sign}{pnl_pct:.2f}%</p>
+                    </div>
+                  </div>
+                  <div class="mb-1">
+                    <div class="flex justify-between text-[10px] text-gray-400 mb-1">
+                      <span>SL ({_price(sl_p)})</span>
+                      <span>Target ({_price(target_p)})</span>
+                    </div>
+                    <div class="w-full h-2 bg-gray-200 rounded-full overflow-hidden relative">
+                      <div class="h-full rounded-full {gauge_color} transition-all" style="width:{position_in_range:.0f}%"></div>
+                    </div>
+                  </div>
+                  <div class="flex justify-between text-[10px] mt-1">
+                    <span class="text-red-500">{dist_to_sl:.1f}% to SL</span>
+                    <span class="text-emerald-500">{dist_to_target:.1f}% to Target</span>
+                  </div>
+                </div>'''
+            else:
+                live_price_html = '''
+                <div class="rounded-lg bg-gray-50 border border-dashed border-gray-200 p-3 mb-4 text-center">
+                  <p class="text-xs text-gray-400">Live price unavailable</p>
+                </div>'''
+
+            hz_label = t.get("horizon_label", "") or ""
             cards += f'''
-            <div class="glass rounded-xl p-5 hover:border-blue-300 transition-all">
+            <div class="glass rounded-xl p-5 hover:border-blue-300 transition-all position-card" data-horizon="{_e(hz_label)}" data-direction="{_e(t['direction'])}" data-expiry="{t.get('expiry_date','')}">
               <div class="flex items-center justify-between mb-4">
                 <div class="flex items-center gap-3">
                   <div class="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold {dir_cls}">{dir_arrow}</div>
                   <div>
                     <p class="font-bold text-gray-800 text-base">{_e(_ticker(t["ticker"]))}</p>
-                    <p class="text-xs text-gray-400">{_e(t.get("sector") or "NSE")}</p>
+                    <p class="text-xs text-gray-400">{_e(t.get("sector") or "NSE")} · Entered {_date(t["entry_date"])}</p>
                   </div>
                 </div>
-                {badge(t.get("horizon_label",""), "info")}
+                {badge(hz_label, "info")}
               </div>
+              {live_price_html}
               <div class="grid grid-cols-3 gap-3 mb-4">
                 <div>
                   <p class="text-[10px] uppercase tracking-wider text-gray-400 mb-0.5">Entry</p>
@@ -636,6 +906,7 @@ def render_positions():
               <div class="mb-3">
                 <div class="flex justify-between text-xs text-gray-400 mb-1.5">
                   <span>Day {days_held} of {total_days}</span>
+                  <span class="font-medium text-gray-500">Expires {_date(t["expiry_date"])}</span>
                   <span>{days_left}d left</span>
                 </div>
                 <div class="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
@@ -652,17 +923,162 @@ def render_positions():
               </div>
             </div>'''
 
+    price_note = f'<span class="text-xs text-gray-400 ml-2">Prices as of {price_ts}</span>' if live_prices else ''
+
+    # Build horizon filter buttons from actual data
+    horizon_counts = {}
+    direction_counts = {"BULLISH": 0, "BEARISH": 0}
+    for t in trades:
+        hz = t.get("horizon_label", "") or ""
+        horizon_counts[hz] = horizon_counts.get(hz, 0) + 1
+        d = t.get("direction", "")
+        if d in direction_counts:
+            direction_counts[d] += 1
+
+    # Sort horizons by horizon_days
+    hz_order = sorted(horizon_counts.keys(), key=lambda h: next((t.get("horizon_days", 0) for t in trades if (t.get("horizon_label") or "") == h), 0))
+
+    hz_buttons = ''
+    for hz in hz_order:
+        cnt = horizon_counts[hz]
+        hz_buttons += f'<button onclick="filterPositions(this, \'{_e(hz)}\')" class="hz-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700 transition-all" data-hz="{_e(hz)}">{_e(hz)} <span class="text-gray-400 ml-1">({cnt})</span></button>'
+
+    bull_cnt = direction_counts["BULLISH"]
+    bear_cnt = direction_counts["BEARISH"]
+
+    # Collect unique expiry dates with counts, sorted chronologically
+    expiry_counts = {}
+    for t in trades:
+        ed = t.get("expiry_date", "")
+        if ed:
+            expiry_counts[ed] = expiry_counts.get(ed, 0) + 1
+    expiry_order = sorted(expiry_counts.keys())
+    expiry_buttons = ''
+    for ed in expiry_order:
+        cnt = expiry_counts[ed]
+        # Color-code: today = red/urgent, tomorrow = amber, rest = default
+        is_today = (ed == today_str)
+        is_tomorrow = False
+        try:
+            from datetime import timedelta
+            is_tomorrow = (ed == (date.today() + timedelta(days=1)).isoformat())
+        except Exception:
+            pass
+        if is_today:
+            exp_cls = "border-red-300 bg-red-50 text-red-600 hover:bg-red-100"
+        elif is_tomorrow:
+            exp_cls = "border-amber-300 bg-amber-50 text-amber-600 hover:bg-amber-100"
+        else:
+            exp_cls = "border-gray-200 bg-white text-gray-600 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700"
+        expiry_buttons += f'<button onclick="filterByExpiry(this, \'{ed}\')" class="exp-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border {exp_cls} transition-all" data-exp="{ed}">{_date(ed)}{" ⚠️" if is_today else ""} <span class="opacity-60 ml-1">({cnt})</span></button>'
+
+    filter_bar = f'''
+    <div class="glass rounded-xl p-4 mb-5 space-y-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider mr-1 w-16">Horizon:</span>
+        <button onclick="filterPositions(this, 'ALL')" class="hz-filter-btn active-filter px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-300 bg-blue-50 text-blue-700 transition-all" data-hz="ALL">All <span class="text-blue-400 ml-1">({len(trades)})</span></button>
+        {hz_buttons}
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider mr-1 w-16">Direction:</span>
+        <button onclick="filterByDirection(this, 'ALL')" class="dir-filter-btn active-dir-filter px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-300 bg-blue-50 text-blue-700 transition-all" data-dir="ALL">All</button>
+        <button onclick="filterByDirection(this, 'BULLISH')" class="dir-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-emerald-600 hover:bg-emerald-50 hover:border-emerald-300 transition-all" data-dir="BULLISH">↑ Bullish ({bull_cnt})</button>
+        <button onclick="filterByDirection(this, 'BEARISH')" class="dir-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-red-600 hover:bg-red-50 hover:border-red-300 transition-all" data-dir="BEARISH">↓ Bearish ({bear_cnt})</button>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider mr-1 w-16">Expiry:</span>
+        <button onclick="filterByExpiry(this, 'ALL')" class="exp-filter-btn active-exp-filter px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-300 bg-blue-50 text-blue-700 transition-all" data-exp="ALL">All</button>
+        {expiry_buttons}
+      </div>
+      <p class="text-[10px] text-gray-400 mt-2" id="filter-summary">Showing all {len(trades)} positions</p>
+    </div>''' if trades else ''
+
+    filter_js = '''
+    <script>
+    (function() {
+      var activeHz = 'ALL', activeDir = 'ALL', activeExp = 'ALL';
+
+      function applyFilters() {
+        var cards = document.querySelectorAll('.position-card');
+        var shown = 0;
+        cards.forEach(function(card) {
+          var hz = card.getAttribute('data-horizon');
+          var dir = card.getAttribute('data-direction');
+          var exp = card.getAttribute('data-expiry');
+          var hzMatch = (activeHz === 'ALL' || hz === activeHz);
+          var dirMatch = (activeDir === 'ALL' || dir === activeDir);
+          var expMatch = (activeExp === 'ALL' || exp === activeExp);
+          if (hzMatch && dirMatch && expMatch) {
+            card.style.display = '';
+            shown++;
+          } else {
+            card.style.display = 'none';
+          }
+        });
+        var summary = document.getElementById('filter-summary');
+        if (summary) {
+          var parts = [];
+          if (activeHz !== 'ALL') parts.push(activeHz);
+          if (activeDir !== 'ALL') parts.push(activeDir.toLowerCase());
+          if (activeExp !== 'ALL') parts.push('expiry ' + activeExp);
+          var label = parts.length ? parts.join(' + ') : 'all';
+          summary.textContent = 'Showing ' + shown + ' of ' + cards.length + ' positions' + (parts.length ? ' \u2014 ' + label : '');
+        }
+      }
+
+      window.filterPositions = function(btn, hz) {
+        activeHz = hz;
+        document.querySelectorAll('.hz-filter-btn').forEach(function(b) {
+          b.classList.remove('active-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
+          b.classList.add('bg-white', 'text-gray-600', 'border-gray-200');
+        });
+        btn.classList.add('active-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
+        btn.classList.remove('bg-white', 'text-gray-600', 'border-gray-200');
+        applyFilters();
+      };
+
+      window.filterByDirection = function(btn, dir) {
+        activeDir = dir;
+        document.querySelectorAll('.dir-filter-btn').forEach(function(b) {
+          b.classList.remove('active-dir-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
+          b.classList.add('bg-white', 'border-gray-200');
+        });
+        btn.classList.add('active-dir-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
+        btn.classList.remove('bg-white', 'border-gray-200');
+        applyFilters();
+      };
+
+      window.filterByExpiry = function(btn, exp) {
+        activeExp = exp;
+        document.querySelectorAll('.exp-filter-btn').forEach(function(b) {
+          b.classList.remove('active-exp-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
+          if (!b.classList.contains('bg-red-50') && !b.classList.contains('bg-amber-50')) {
+            b.classList.add('bg-white', 'border-gray-200');
+          }
+        });
+        btn.classList.add('active-exp-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
+        btn.classList.remove('bg-white', 'border-gray-200', 'bg-red-50', 'border-red-300', 'bg-amber-50', 'border-amber-300');
+        applyFilters();
+      };
+    })();
+    </script>'''
+
     body = f'''
     <div class="flex items-center justify-between mb-6">
       <div>
         <h2 class="text-2xl font-bold text-gray-800">Open Positions</h2>
-        <p class="text-sm text-gray-500 mt-1">{len(trades)} active trades</p>
+        <p class="text-sm text-gray-500 mt-1">{len(trades)} active trades {price_note}</p>
       </div>
-      <a href="/positions" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm transition shadow-sm">Refresh</a>
+      <a href="/positions" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm transition shadow-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        Refresh Prices
+      </a>
     </div>
-    <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+    {filter_bar}
+    <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4" id="positions-grid">
       {cards}
-    </div>'''
+    </div>
+    {filter_js}'''
     return page_shell("Open Positions", "positions", body)
 
 
