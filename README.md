@@ -152,8 +152,8 @@ The pre-extracted knowledge (`book_extracts/` and `parsed_knowledge/`) is includ
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/prateektyagi2203/Traqo.git
-cd Traqo
+git clone https://github.com/prateektyagi2203/Traqo_V1.0.git
+cd Traqo_V1.0
 python -m venv .venv
 
 # Windows:
