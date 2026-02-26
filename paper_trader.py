@@ -1611,7 +1611,9 @@ class PaperTrader:
                 total = stats["wins"] + stats["losses"]
                 if total >= 2:
                     win_rate = stats["wins"] / total * 100
-                    avg_ret = np.mean(stats["returns"]) if stats["returns"] else 0
+                    # Filter out None values before computing mean
+                    valid_returns = [r for r in stats["returns"] if r is not None]
+                    avg_ret = np.mean(valid_returns) if valid_returns else 0
 
                     # Decay-weighted win rate (#3)
                     decay_wr = (stats["weighted_wins"] / stats["weighted_total"] * 100
@@ -1646,7 +1648,8 @@ class PaperTrader:
                     wr = rs["wins"] / total * 100
                     decay_wr = (rs["weighted_wins"] / rs["weighted_total"] * 100
                                 if rs["weighted_total"] > 0 else wr)
-                    avg_ret = np.mean(rs["returns"]) if rs["returns"] else 0
+                    valid_returns = [r for r in rs["returns"] if r is not None]
+                    avg_ret = np.mean(valid_returns) if valid_returns else 0
                     regime_adjustments[rkey] = {
                         "win_rate": round(wr, 1),
                         "decay_weighted_win_rate": round(decay_wr, 2),
@@ -1663,7 +1666,8 @@ class PaperTrader:
                     wr = hs["wins"] / total * 100
                     decay_wr = (hs["weighted_wins"] / hs["weighted_total"] * 100
                                 if hs["weighted_total"] > 0 else wr)
-                    avg_ret = np.mean(hs["returns"]) if hs["returns"] else 0
+                    valid_returns = [r for r in hs["returns"] if r is not None]
+                    avg_ret = np.mean(valid_returns) if valid_returns else 0
                     horizon_adjustments[hkey] = {
                         "win_rate": round(wr, 1),
                         "decay_weighted_win_rate": round(decay_wr, 2),
@@ -1680,7 +1684,8 @@ class PaperTrader:
                     wr = ts["wins"] / total * 100
                     decay_wr = (ts["weighted_wins"] / ts["weighted_total"] * 100
                                 if ts["weighted_total"] > 0 else wr)
-                    avg_ret = np.mean(ts["returns"]) if ts["returns"] else 0
+                    valid_returns = [r for r in ts["returns"] if r is not None]
+                    avg_ret = np.mean(valid_returns) if valid_returns else 0
                     triple_adjustments[tkey] = {
                         "win_rate": round(wr, 1),
                         "decay_weighted_win_rate": round(decay_wr, 2),
@@ -1697,7 +1702,8 @@ class PaperTrader:
                     wr = ss["wins"] / total * 100
                     decay_wr = (ss["weighted_wins"] / ss["weighted_total"] * 100
                                 if ss["weighted_total"] > 0 else wr)
-                    avg_ret = np.mean(ss["returns"]) if ss["returns"] else 0
+                    valid_returns = [r for r in ss["returns"] if r is not None]
+                    avg_ret = np.mean(valid_returns) if valid_returns else 0
                     sector_adjustments[skey] = {
                         "win_rate": round(wr, 1),
                         "decay_weighted_win_rate": round(decay_wr, 2),
