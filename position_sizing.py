@@ -23,6 +23,47 @@ from trading_config import (
     DEFAULT_CAPITAL,
 )
 
+# Horizon multipliers — shorter horizons get slightly larger sizes (faster
+# compounding), longer horizons reduce to manage overnight/swing risk.
+HORIZON_SIZE_MULTIPLIER = {
+    "BTST_1d":   1.2,
+    "Swing_3d":  1.0,
+    "Swing_5d":  0.9,  # primary horizon
+    "Swing_10d": 0.8,
+    # "Swing_25d" removed from scope
+}
+
+# Sector volatility adjustment — high-beta sectors get smaller sizes.
+# Values represent *multipliers* on position size (lower = smaller position).
+SECTOR_VOL_MULTIPLIER = {
+    "banking":       0.85,  # high beta
+    "finance":       0.85,
+    "metals":        0.80,  # very cyclical
+    "realty":        0.75,  # high volatility
+    "energy":        0.90,
+    "it":            0.95,
+    "pharma":        1.00,  # defensive
+    "fmcg":          1.05,  # low vol, defensive
+    "auto":          0.90,
+    "chemicals":     0.90,
+    "capital_goods":  0.90,
+    "cement":        0.95,
+    "infra":         0.85,
+    "consumer":      0.95,
+    "defence":       0.90,
+    "telecom":       0.95,
+    "media":         0.85,
+    "consumer_tech": 0.90,
+    "logistics":     0.90,
+    "textiles":      0.85,
+    "diversified":   0.90,
+    "commodity":     0.80,  # very volatile
+    "index_in":      1.00,
+    "index_us":      1.00,
+    "index_asia":    0.90,
+    "index_eu":      0.95,
+}
+
 
 class PositionSizer:
     """Calculate position sizes using Kelly Criterion with safety bounds."""
@@ -66,7 +107,9 @@ class PositionSizer:
 
     def calculate_size(self, win_rate: float, profit_factor: float,
                        sl_pct: float, confidence_level: str = "MEDIUM",
-                       avg_return: float = None) -> Dict[str, float]:
+                       avg_return: float = None,
+                       horizon_label: str = None,
+                       sector: str = None) -> Dict[str, float]:
         """Calculate position size for a trade.
         
         Args:
@@ -75,6 +118,8 @@ class PositionSizer:
             sl_pct: Stop-loss percentage for this trade
             confidence_level: HIGH/MEDIUM/LOW from predictor
             avg_return: Average return per trade (optional)
+            horizon_label: e.g. "BTST_1d", "Swing_5d" — scales size by horizon
+            sector: e.g. "banking", "pharma" — scales size by sector volatility
         
         Returns:
             Dict with position_pct, position_value, shares, kelly_raw, etc.
@@ -103,6 +148,14 @@ class PositionSizer:
         
         adjusted_pct = kelly_raw * conf_multiplier * 100  # convert to %
         
+        # Horizon-based scaling
+        hz_mult = HORIZON_SIZE_MULTIPLIER.get(horizon_label, 1.0) if horizon_label else 1.0
+        adjusted_pct *= hz_mult
+        
+        # Sector volatility scaling
+        sec_mult = SECTOR_VOL_MULTIPLIER.get(sector, 1.0) if sector else 1.0
+        adjusted_pct *= sec_mult
+        
         # Enforce bounds
         if adjusted_pct < self.min_position_pct:
             adjusted_pct = 0  # Below minimum = no trade
@@ -115,6 +168,8 @@ class PositionSizer:
             "position_pct": round(adjusted_pct, 2),
             "position_value": round(position_value, 2),
             "confidence_multiplier": conf_multiplier,
+            "horizon_multiplier": hz_mult,
+            "sector_multiplier": sec_mult,
             "risk_per_trade": round(position_value * sl_pct / 100, 2),
             "risk_pct_capital": round(adjusted_pct * sl_pct / 100, 4),
             "avg_win_est": round(avg_win, 4),

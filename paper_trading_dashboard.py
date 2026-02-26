@@ -76,15 +76,71 @@ def get_db():
     return conn
 
 
+def cancel_trade(trade_id: int):
+    """Cancel an open trade: mark CANCELLED in DB and remove RAG feedback imprints."""
+    # 1) Mark CANCELLED in SQLite
+    db_full = os.path.join(SCRIPT_DIR, DB_PATH)
+    conn = sqlite3.connect(db_full)
+    conn.execute(
+        "UPDATE trades SET status='CANCELLED', exit_date=?, exit_reason='user_cancelled',"
+        " updated_at=datetime('now') WHERE id=? AND status='OPEN'",
+        (date.today().isoformat(), trade_id)
+    )
+    conn.commit()
+    conn.close()
+
+    # 2) Erase from RAG feedback log
+    fb_path = os.path.join(SCRIPT_DIR, "feedback", "feedback_log.json")
+    if os.path.exists(fb_path):
+        try:
+            with open(fb_path, "r", encoding="utf-8") as f:
+                feedback = json.load(f)
+            pid = f"paper_{trade_id}"
+            cleaned = [e for e in feedback if e.get("trade_id") != pid]
+            if len(cleaned) < len(feedback):
+                with open(fb_path, "w", encoding="utf-8") as f:
+                    json.dump(cleaned, f, indent=2, default=str)
+        except Exception:
+            pass
+
+
+def cancel_trades_bulk(ids: list):
+    """Cancel multiple open trades and erase their RAG feedback imprints."""
+    db_full = os.path.join(SCRIPT_DIR, DB_PATH)
+    conn = sqlite3.connect(db_full)
+    today = date.today().isoformat()
+    for trade_id in ids:
+        conn.execute(
+            "UPDATE trades SET status='CANCELLED', exit_date=?, exit_reason='user_cancelled',"
+            " updated_at=datetime('now') WHERE id=? AND status='OPEN'",
+            (today, trade_id)
+        )
+    conn.commit()
+    conn.close()
+
+    fb_path = os.path.join(SCRIPT_DIR, "feedback", "feedback_log.json")
+    if os.path.exists(fb_path):
+        try:
+            with open(fb_path, "r", encoding="utf-8") as f:
+                feedback = json.load(f)
+            pids = {f"paper_{tid}" for tid in ids}
+            cleaned = [e for e in feedback if e.get("trade_id") not in pids]
+            if len(cleaned) < len(feedback):
+                with open(fb_path, "w", encoding="utf-8") as f:
+                    json.dump(cleaned, f, indent=2, default=str)
+        except Exception:
+            pass
+
+
 def q_stats():
     c = get_db()
     open_n = c.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()[0]
-    closed_n = c.execute("SELECT COUNT(*) FROM trades WHERE status!='OPEN'").fetchone()[0]
+    closed_n = c.execute("SELECT COUNT(*) FROM trades WHERE status NOT IN ('OPEN','CANCELLED')").fetchone()[0]
     wins = c.execute("SELECT COUNT(*) FROM trades WHERE status IN ('WON','EXPIRED_WIN')").fetchone()[0]
     losses = c.execute("SELECT COUNT(*) FROM trades WHERE status IN ('LOST','EXPIRED_LOSS')").fetchone()[0]
     avg_w = c.execute("SELECT AVG(actual_return_pct) FROM trades WHERE status IN ('WON','EXPIRED_WIN')").fetchone()[0] or 0
     avg_l = c.execute("SELECT AVG(actual_return_pct) FROM trades WHERE status IN ('LOST','EXPIRED_LOSS')").fetchone()[0] or 0
-    tot_ret = c.execute("SELECT SUM(actual_return_pct) FROM trades WHERE status!='OPEN'").fetchone()[0] or 0
+    tot_ret = c.execute("SELECT SUM(actual_return_pct) FROM trades WHERE status NOT IN ('OPEN','CANCELLED')").fetchone()[0] or 0
     wr = (wins / closed_n * 100) if closed_n else 0
     pf = (abs(avg_w * wins) / abs(avg_l * losses)) if (losses and avg_l) else 0
     last_scan = c.execute("SELECT MAX(scan_date) FROM scan_log").fetchone()[0] or "Never"
@@ -108,7 +164,7 @@ def q_open_trades():
 
 def q_closed_trades():
     c = get_db()
-    rows = [dict(r) for r in c.execute("SELECT * FROM trades WHERE status!='OPEN' ORDER BY exit_date DESC LIMIT 200").fetchall()]
+    rows = [dict(r) for r in c.execute("SELECT * FROM trades WHERE status NOT IN ('OPEN','CANCELLED') ORDER BY exit_date DESC LIMIT 200").fetchall()]
     c.close()
     return rows
 
@@ -135,7 +191,7 @@ def q_stats_by_horizon():
                AVG(CASE WHEN status IN ('WON','EXPIRED_WIN') THEN actual_return_pct END) as avg_win,
                AVG(CASE WHEN status IN ('LOST','EXPIRED_LOSS') THEN actual_return_pct END) as avg_loss,
                SUM(actual_return_pct) as total_ret
-        FROM trades WHERE status!='OPEN'
+        FROM trades WHERE status NOT IN ('OPEN','CANCELLED')
         GROUP BY horizon_days ORDER BY horizon_days
     """).fetchall()]
     for r in rows:
@@ -153,7 +209,7 @@ def q_stats_by_pattern():
                SUM(CASE WHEN status IN ('WON','EXPIRED_WIN') THEN 1 ELSE 0 END) as wins,
                SUM(CASE WHEN status IN ('LOST','EXPIRED_LOSS') THEN 1 ELSE 0 END) as losses,
                AVG(actual_return_pct) as avg_ret
-        FROM trades WHERE status!='OPEN'
+        FROM trades WHERE status NOT IN ('OPEN','CANCELLED')
         GROUP BY patterns ORDER BY total DESC LIMIT 20
     """).fetchall()]
     for r in rows:
@@ -172,7 +228,7 @@ def q_stats_by_stock():
                SUM(CASE WHEN status IN ('LOST','EXPIRED_LOSS') THEN 1 ELSE 0 END) as losses,
                AVG(actual_return_pct) as avg_ret,
                SUM(actual_return_pct) as total_ret
-        FROM trades WHERE status!='OPEN'
+        FROM trades WHERE status NOT IN ('OPEN','CANCELLED')
         GROUP BY ticker ORDER BY total DESC LIMIT 30
     """).fetchall()]
     for r in rows:
@@ -224,13 +280,16 @@ STREAMLIT_NOISE = (
 def _is_noise(line: str) -> bool:
     return any(n in line for n in STREAMLIT_NOISE) or not line.strip()
 
-def _engine_worker(action):
+def _engine_worker(action, extra_args=None):
     global _engine_state
     try:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        cmd_list = [sys.executable, os.path.join(SCRIPT_DIR, "paper_trader.py"), action]
+        if extra_args:
+            cmd_list.extend(extra_args)
         proc = subprocess.Popen(
-            [sys.executable, os.path.join(SCRIPT_DIR, "paper_trader.py"), action],
+            cmd_list,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, cwd=SCRIPT_DIR, env=env
         )
@@ -251,7 +310,7 @@ def _engine_worker(action):
             _engine_state["done"] = True
             _engine_state["running"] = False
 
-def start_engine(action):
+def start_engine(action, extra_args=None):
     global _engine_state
     with _engine_lock:
         if _engine_state["running"]:
@@ -264,7 +323,7 @@ def start_engine(action):
             "success": None,
             "started_at": datetime.now().isoformat(),
         }
-    t = threading.Thread(target=_engine_worker, args=(action,), daemon=True)
+    t = threading.Thread(target=_engine_worker, args=(action, extra_args), daemon=True)
     t.start()
     return True
 
@@ -278,6 +337,19 @@ def get_engine_status():
             "lines": list(_engine_state["output_lines"]),
             "started_at": _engine_state["started_at"],
         }
+
+
+PENDING_SIGNALS_FILE = os.path.join(SCRIPT_DIR, "paper_trades", "pending_signals.json")
+
+def get_pending_signals():
+    """Read the pending signals staging file if it exists."""
+    if os.path.exists(PENDING_SIGNALS_FILE):
+        try:
+            with open(PENDING_SIGNALS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
 
 
 # ============================================================
@@ -875,7 +947,10 @@ def render_positions():
 
             hz_label = t.get("horizon_label", "") or ""
             cards += f'''
-            <div class="glass rounded-xl p-5 hover:border-blue-300 transition-all position-card" data-horizon="{_e(hz_label)}" data-direction="{_e(t['direction'])}" data-expiry="{t.get('expiry_date','')}">
+            <div class="glass rounded-xl p-5 hover:border-blue-300 transition-all position-card relative" data-horizon="{_e(hz_label)}" data-direction="{_e(t['direction'])}" data-expiry="{t.get('expiry_date','')}" data-id="{t['id']}">
+              <label class="select-checkbox-wrap hidden absolute top-3 left-3 z-10 cursor-pointer" title="Select">
+                <input type="checkbox" class="pos-checkbox w-5 h-5 rounded border-gray-400 text-red-600 focus:ring-red-500 cursor-pointer" data-id="{t['id']}">
+              </label>
               <div class="flex items-center justify-between mb-4">
                 <div class="flex items-center gap-3">
                   <div class="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold {dir_cls}">{dir_arrow}</div>
@@ -921,6 +996,9 @@ def render_positions():
               <div class="mt-2">
                 <p class="text-[10px] text-gray-400 truncate" title="{_e(t.get('patterns',''))}">{_e(patterns_display)}</p>
               </div>
+              <form method="POST" action="/trade/cancel?id={t['id']}" onsubmit="return confirm('Cancel this trade and erase all RAG imprints? This cannot be undone.')" class="cancel-trade-form mt-3 pt-3 border-t border-gray-100">
+                <button type="submit" class="w-full py-1.5 text-xs font-medium text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition-all">&#x2715; Cancel Trade &amp; Remove from RAG</button>
+              </form>
             </div>'''
 
     price_note = f'<span class="text-xs text-gray-400 ml-2">Prices as of {price_ts}</span>' if live_prices else ''
@@ -1063,22 +1141,100 @@ def render_positions():
     })();
     </script>'''
 
+    bulk_bar = '''
+    <div id="bulk-cancel-bar" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 bg-white border border-gray-200 rounded-2xl shadow-2xl">
+      <span id="bulk-count" class="text-sm font-medium text-gray-700">0 selected</span>
+      <button onclick="selectAllVisible()" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm hover:bg-gray-200 transition font-medium">Select All Visible</button>
+      <button onclick="cancelSelected()" class="px-4 py-2 rounded-lg bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition">&#x2715; Cancel Selected</button>
+      <button onclick="toggleSelectMode()" class="px-3 py-2 rounded-lg bg-gray-100 text-gray-500 text-sm hover:bg-gray-200 transition">Exit Select</button>
+    </div>'''
+
+    multiselect_js = '''
+    <script>
+    (function() {
+      var selectMode = false;
+      window.toggleSelectMode = function() {
+        selectMode = !selectMode;
+        var btn = document.getElementById('select-mode-btn');
+        var checkboxWraps = document.querySelectorAll('.select-checkbox-wrap');
+        var cancelForms = document.querySelectorAll('.cancel-trade-form');
+        var bar = document.getElementById('bulk-cancel-bar');
+        if (selectMode) {
+          btn.innerHTML = '&#x2715; Exit Select';
+          btn.classList.add('bg-blue-50', 'border-blue-300', 'text-blue-700');
+          btn.classList.remove('text-gray-600');
+          checkboxWraps.forEach(function(w) { w.classList.remove('hidden'); });
+          cancelForms.forEach(function(f) { f.classList.add('hidden'); });
+          bar.classList.remove('hidden');
+        } else {
+          btn.innerHTML = '&#x2611; Select';
+          btn.classList.remove('bg-blue-50', 'border-blue-300', 'text-blue-700');
+          btn.classList.add('text-gray-600');
+          checkboxWraps.forEach(function(w) {
+            w.classList.add('hidden');
+            w.querySelector('input').checked = false;
+          });
+          cancelForms.forEach(function(f) { f.classList.remove('hidden'); });
+          bar.classList.add('hidden');
+          updateBulkCount();
+        }
+      };
+      window.updateBulkCount = function() {
+        var checked = document.querySelectorAll('.pos-checkbox:checked');
+        document.getElementById('bulk-count').textContent = checked.length + ' selected';
+      };
+      window.selectAllVisible = function() {
+        document.querySelectorAll('.position-card').forEach(function(card) {
+          if (card.style.display !== 'none') {
+            var cb = card.querySelector('.pos-checkbox');
+            if (cb) cb.checked = true;
+          }
+        });
+        updateBulkCount();
+      };
+      window.cancelSelected = function() {
+        var checked = document.querySelectorAll('.pos-checkbox:checked');
+        if (!checked.length) { alert('No trades selected.'); return; }
+        if (!confirm('Cancel ' + checked.length + ' selected trade(s) and remove their RAG imprints? This cannot be undone.')) return;
+        var ids = Array.from(checked).map(function(cb) { return cb.getAttribute('data-id'); }).join(',');
+        var form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '/trade/cancel-bulk';
+        var inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = 'ids'; inp.value = ids;
+        form.appendChild(inp);
+        document.body.appendChild(form);
+        form.submit();
+      };
+      document.addEventListener('change', function(e) {
+        if (e.target && e.target.classList.contains('pos-checkbox')) {
+          updateBulkCount();
+        }
+      });
+    })();
+    </script>'''
+
     body = f'''
     <div class="flex items-center justify-between mb-6">
       <div>
         <h2 class="text-2xl font-bold text-gray-800">Open Positions</h2>
         <p class="text-sm text-gray-500 mt-1">{len(trades)} active trades {price_note}</p>
       </div>
-      <a href="/positions" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm transition shadow-sm">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-        Refresh Prices
-      </a>
+      <div class="flex items-center gap-2">
+        <button id="select-mode-btn" onclick="toggleSelectMode()" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 hover:bg-blue-50 hover:border-blue-300 text-gray-600 text-sm transition shadow-sm">&#x2611; Select</button>
+        <a href="/positions" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm transition shadow-sm">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          Refresh Prices
+        </a>
+      </div>
     </div>
     {filter_bar}
     <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4" id="positions-grid">
       {cards}
     </div>
-    {filter_js}'''
+    {filter_js}
+    {bulk_bar}
+    {multiselect_js}'''
     return page_shell("Open Positions", "positions", body)
 
 
@@ -1278,11 +1434,12 @@ def render_engine(action_result=None):
     scan_log = q_scan_log()
     log_lines = get_engine_log()
     status = get_engine_status()
+    pending = get_pending_signals()
 
     # Action buttons - disabled while engine is running
     disabled = 'opacity-50 pointer-events-none' if status['running'] else ''
     buttons = f'''
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
       <form method="POST" action="/engine?action=run">
         <button type="submit" class="w-full glass rounded-xl p-6 text-left hover:border-blue-400 transition-all group {disabled}">
           <div class="flex items-center gap-3 mb-2">
@@ -1304,7 +1461,20 @@ def render_engine(action_result=None):
             </div>
             <div>
               <p class="font-semibold text-gray-800 group-hover:text-emerald-600 transition">Scan Only</p>
-              <p class="text-xs text-gray-400">Scan for new signals today</p>
+              <p class="text-xs text-gray-400">Scan + auto-enter signals</p>
+            </div>
+          </div>
+        </button>
+      </form>
+      <form method="POST" action="/engine?action=scan_preview">
+        <button type="submit" class="w-full glass rounded-xl p-6 text-left hover:border-purple-400 transition-all group {disabled}">
+          <div class="flex items-center gap-3 mb-2">
+            <div class="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center">
+              <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+            </div>
+            <div>
+              <p class="font-semibold text-gray-800 group-hover:text-purple-600 transition">Scan & Review</p>
+              <p class="text-xs text-gray-400">Scan signals, approve manually</p>
             </div>
           </div>
         </button>
@@ -1373,6 +1543,16 @@ def render_engine(action_result=None):
                   document.querySelectorAll('form button').forEach(b => {
                     b.classList.remove('opacity-50', 'pointer-events-none');
                   });
+                  // If scan_preview just finished, check for pending signals and reload
+                  if (data.action === 'scan_preview' && data.success) {
+                    fetch('/engine/pending').then(r => r.json()).then(p => {
+                      if (p.has_pending) setTimeout(() => location.reload(), 500);
+                    });
+                  }
+                  // If approve just finished, reload to clear review panel
+                  if (data.action === 'approve' && data.success) {
+                    setTimeout(() => location.reload(), 500);
+                  }
                 } else {
                   setTimeout(poll, 800);
                 }
@@ -1428,11 +1608,252 @@ def render_engine(action_result=None):
       </div>
     </div>'''
 
+    # Signal Review Panel (shows when pending signals exist)
+    review_html = ""
+    if pending and not status['running']:
+        total = pending.get("total_signals", 0)
+        qualifying = pending.get("qualifying", 0)
+        filtered_out = pending.get("filtered_out", 0)
+        scan_dt = pending.get("scan_date", "")
+        skip_summary = pending.get("skip_reason_summary", {})
+        signals = pending.get("signals", [])
+        skipped = pending.get("skipped", [])
+
+        # Skip reason badges
+        skip_badges = ""
+        for reason, cnt in sorted(skip_summary.items(), key=lambda x: -x[1]):
+            colors = {"Low Win Rate": "red", "Low Confidence": "amber",
+                      "Low R:R Ratio": "orange", "Duplicate Trade": "gray"}.get(reason, "gray")
+            skip_badges += f'<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-{colors}-50 text-{colors}-700">{_e(reason)}: {cnt}</span> '
+
+        # Summary bar
+        summary_bar = f'''
+        <div class="glass rounded-xl p-5 mb-6 border-purple-300 fade-in">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-3">
+              <h3 class="text-lg font-semibold text-gray-800">Signal Review</h3>
+              <span class="text-xs px-2 py-1 rounded-full bg-purple-50 text-purple-700">Scan {_e(scan_dt)}</span>
+            </div>
+            <span class="text-xs text-gray-400">Awaiting your approval</span>
+          </div>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+            <div class="bg-gray-50 rounded-lg p-3 text-center">
+              <p class="text-2xl font-bold text-gray-800">{total}</p>
+              <p class="text-xs text-gray-500">Total Signals</p>
+            </div>
+            <div class="bg-emerald-50 rounded-lg p-3 text-center">
+              <p class="text-2xl font-bold text-emerald-700">{qualifying}</p>
+              <p class="text-xs text-emerald-600">Qualifying</p>
+            </div>
+            <div class="bg-red-50 rounded-lg p-3 text-center">
+              <p class="text-2xl font-bold text-red-700">{filtered_out}</p>
+              <p class="text-xs text-red-600">Filtered Out</p>
+            </div>
+            <div class="bg-blue-50 rounded-lg p-3 text-center">
+              <p class="text-2xl font-bold text-blue-700">{pending.get("duration", 0):.0f}s</p>
+              <p class="text-xs text-blue-600">Scan Duration</p>
+            </div>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-1">
+            <span class="text-xs text-gray-500 font-medium">Skip Reasons:</span>
+            {skip_badges if skip_badges else '<span class="text-xs text-gray-400 italic">None</span>'}
+          </div>
+        </div>'''
+
+        # Fetch live prices for qualifying signal tickers
+        all_tickers = list(set(sig.get("ticker", "") for sig in signals + skipped))
+        live_prices = fetch_live_prices(all_tickers) if all_tickers else {}
+
+        # Qualifying signals table
+        if signals:
+            sig_rows = ""
+            for i, sig in enumerate(signals):
+                dir_color = "emerald" if sig.get("direction") == "BULLISH" else "red"
+                dir_icon = "&#9650;" if sig.get("direction") == "BULLISH" else "&#9660;"
+                wr = sig.get("predicted_win_rate", 0)
+                wr_color = "emerald" if wr >= 60 else ("amber" if wr >= 55 else "red")
+                rr = sig.get("rr_ratio", 0)
+                rr_val = f"{rr:.1f}x" if rr else "-"
+                conf = sig.get("confidence", "-")
+                conf_color = {"HIGH": "emerald", "MEDIUM": "amber", "LOW": "red"}.get(conf, "gray")
+                sector = _e(sig.get("sector", "-") or "-")
+                patterns = _e(sig.get("patterns", "-") or "-")
+                if len(patterns) > 30:
+                    patterns = patterns[:28] + ".."
+                # Current market price
+                cmp = live_prices.get(sig.get("ticker", ""))
+                entry_p = sig.get("entry_price", 0)
+                if cmp:
+                    cmp_diff = ((cmp - entry_p) / entry_p * 100) if entry_p else 0
+                    cmp_color = "emerald" if cmp_diff >= 0 else "red"
+                    cmp_html = f'{cmp:.2f} <span class="text-xs text-{cmp_color}-500">({cmp_diff:+.1f}%)</span>'
+                else:
+                    cmp_html = '<span class="text-gray-400">-</span>'
+
+                sig_rows += f'''
+                <tr class="hover:bg-purple-50/50 border-b border-gray-100">
+                  <td class="px-3 py-2 text-center">
+                    <input type="checkbox" name="sig_idx" value="{i}" checked
+                      class="sig-checkbox w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                  </td>
+                  <td class="px-3 py-2 font-medium text-gray-800">{_e(sig.get("ticker",""))}</td>
+                  <td class="px-3 py-2 text-center">
+                    <span class="text-{dir_color}-600 font-semibold">{dir_icon} {_e(sig.get("direction",""))}</span>
+                  </td>
+                  <td class="px-3 py-2 text-center">
+                    <span class="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-700">{_e(sig.get("horizon_label",""))}</span>
+                  </td>
+                  <td class="px-3 py-2 text-right text-gray-700">{sig.get("entry_price",0):.2f}</td>
+                  <td class="px-3 py-2 text-right font-medium">{cmp_html}</td>
+                  <td class="px-3 py-2 text-right text-emerald-600">{sig.get("target_price",0):.2f}</td>
+                  <td class="px-3 py-2 text-right text-red-600">{sig.get("sl_price",0):.2f}</td>
+                  <td class="px-3 py-2 text-center">
+                    <span class="text-{wr_color}-600 font-medium">{wr:.0f}%</span>
+                  </td>
+                  <td class="px-3 py-2 text-center text-gray-700">{rr_val}</td>
+                  <td class="px-3 py-2 text-center">
+                    <span class="px-2 py-0.5 rounded-full text-xs bg-{conf_color}-50 text-{conf_color}-700">{_e(conf)}</span>
+                  </td>
+                  <td class="px-3 py-2 text-xs text-gray-500">{sector}</td>
+                  <td class="px-3 py-2 text-xs text-gray-500">{patterns}</td>
+                </tr>'''
+
+            signals_table = f'''
+            <div class="glass rounded-xl p-5 mb-6 border-purple-200 fade-in">
+              <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-3">
+                  <h3 class="text-lg font-semibold text-gray-800">Qualifying Signals ({qualifying})</h3>
+                  <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                    <input type="checkbox" id="select-all" checked
+                      class="w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                    Select All
+                  </label>
+                </div>
+                <div class="flex gap-2">
+                  <button onclick="approveSelected()" class="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 transition">
+                    Approve Selected
+                  </button>
+                  <button onclick="approveAll()" class="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 transition">
+                    Approve All
+                  </button>
+                  <form method="POST" action="/engine?action=discard" style="display:inline">
+                    <button type="submit" class="px-4 py-2 rounded-lg bg-red-100 text-red-700 text-sm font-medium hover:bg-red-200 transition">
+                      Discard All
+                    </button>
+                  </form>
+                </div>
+              </div>
+              <div class="overflow-x-auto scrollbar-thin">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="border-b border-gray-200">
+                      <th class="px-3 py-2 text-center text-xs text-gray-500 uppercase w-10"></th>
+                      <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Ticker</th>
+                      <th class="px-3 py-2 text-center text-xs text-gray-500 uppercase">Direction</th>
+                      <th class="px-3 py-2 text-center text-xs text-gray-500 uppercase">Horizon</th>
+                      <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase">Entry</th>
+                      <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase">CMP</th>
+                      <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase">Target</th>
+                      <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase">SL</th>
+                      <th class="px-3 py-2 text-center text-xs text-gray-500 uppercase">Win%</th>
+                      <th class="px-3 py-2 text-center text-xs text-gray-500 uppercase">R:R</th>
+                      <th class="px-3 py-2 text-center text-xs text-gray-500 uppercase">Conf</th>
+                      <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Sector</th>
+                      <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Patterns</th>
+                    </tr>
+                  </thead>
+                  <tbody>{sig_rows}</tbody>
+                </table>
+              </div>
+            </div>'''
+        else:
+            signals_table = ""
+
+        # Skipped signals (collapsible)
+        skipped_html = ""
+        if skipped:
+            skip_rows = ""
+            for sig in skipped:
+                dir_color = "emerald" if sig.get("direction") == "BULLISH" else "red"
+                dir_icon = "&#9650;" if sig.get("direction") == "BULLISH" else "&#9660;"
+                reasons = "; ".join(sig.get("skip_reasons", []))
+                skip_rows += f'''
+                <tr class="hover:bg-red-50/30 border-b border-gray-100 text-gray-400">
+                  <td class="px-3 py-1.5">{_e(sig.get("ticker",""))}</td>
+                  <td class="px-3 py-1.5 text-center">
+                    <span class="text-{dir_color}-400">{dir_icon}</span>
+                  </td>
+                  <td class="px-3 py-1.5 text-center text-xs">{_e(sig.get("horizon_label",""))}</td>
+                  <td class="px-3 py-1.5 text-right">{sig.get("entry_price",0):.2f}</td>
+                  <td class="px-3 py-1.5 text-xs text-red-500">{_e(reasons)}</td>
+                </tr>'''
+
+            skipped_html = f'''
+            <div class="glass rounded-xl p-5 mb-6 border-red-100 fade-in">
+              <details>
+                <summary class="cursor-pointer text-sm font-semibold text-gray-600 hover:text-gray-800 transition">
+                  Filtered Out Signals ({filtered_out}) — click to expand
+                </summary>
+                <div class="overflow-x-auto scrollbar-thin mt-3">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="border-b border-gray-200">
+                        <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Ticker</th>
+                        <th class="px-3 py-2 text-center text-xs text-gray-500 uppercase">Dir</th>
+                        <th class="px-3 py-2 text-center text-xs text-gray-500 uppercase">Horizon</th>
+                        <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase">Entry</th>
+                        <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Skip Reason(s)</th>
+                      </tr>
+                    </thead>
+                    <tbody>{skip_rows}</tbody>
+                  </table>
+                </div>
+              </details>
+            </div>'''
+
+        # JS for select all & approve actions
+        review_js = '''
+        <script>
+        document.getElementById('select-all').addEventListener('change', function() {
+          document.querySelectorAll('.sig-checkbox').forEach(cb => cb.checked = this.checked);
+        });
+        document.querySelectorAll('.sig-checkbox').forEach(cb => {
+          cb.addEventListener('change', function() {
+            const all = document.querySelectorAll('.sig-checkbox');
+            const checked = document.querySelectorAll('.sig-checkbox:checked');
+            document.getElementById('select-all').checked = all.length === checked.length;
+          });
+        });
+
+        function approveSelected() {
+          const checked = document.querySelectorAll('.sig-checkbox:checked');
+          if (checked.length === 0) { alert('No signals selected'); return; }
+          const indices = Array.from(checked).map(cb => cb.value).join(',');
+          const form = document.createElement('form');
+          form.method = 'POST';
+          form.action = '/engine?action=approve&indices=' + indices;
+          document.body.appendChild(form);
+          form.submit();
+        }
+
+        function approveAll() {
+          if (!confirm('Approve all qualifying signals?')) return;
+          const form = document.createElement('form');
+          form.method = 'POST';
+          form.action = '/engine?action=approve';
+          document.body.appendChild(form);
+          form.submit();
+        }
+        </script>'''
+
+        review_html = summary_bar + signals_table + skipped_html + review_js
+
     body = f'''
     <h2 class="text-2xl font-bold text-gray-800 mb-2">Engine Control</h2>
     <p class="text-sm text-gray-500 mb-6">Run the paper trading engine manually or view logs</p>
     {buttons}
     {live_html}
+    {review_html}
     {scan_html}
     {log_html}'''
     return page_shell("Engine Control", "engine", body)
@@ -1465,6 +1886,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(json.dumps(status).encode("utf-8"))
+        elif path == "engine/pending":
+            # JSON endpoint: check if pending signals file exists
+            pending = get_pending_signals()
+            result = {"has_pending": pending is not None}
+            if pending:
+                result["qualifying"] = pending.get("qualifying", 0)
+                result["filtered_out"] = pending.get("filtered_out", 0)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode("utf-8"))
         elif path in routes:
             _, renderer = routes[path]
             try:
@@ -1493,13 +1926,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "engine":
             action = params.get("action", ["run"])[0]
-            if action in ("run", "scan", "monitor"):
+            if action in ("run", "scan", "monitor", "scan_preview"):
                 start_engine(action)
                 # Redirect to GET /engine so user sees live output
                 self.send_response(302)
                 self.send_header("Location", "/engine")
                 self.end_headers()
                 return
+            elif action == "approve":
+                indices_str = params.get("indices", [None])[0]
+                extra = [indices_str] if indices_str else None
+                start_engine("approve", extra_args=extra)
+                self.send_response(302)
+                self.send_header("Location", "/engine")
+                self.end_headers()
+                return
+            elif action == "discard":
+                # Quick operation — just delete staging file, no engine needed
+                if os.path.exists(PENDING_SIGNALS_FILE):
+                    os.remove(PENDING_SIGNALS_FILE)
+                self.send_response(302)
+                self.send_header("Location", "/engine")
+                self.end_headers()
+                return
+
+        elif path == "trade/cancel":
+            try:
+                trade_id = int(params.get("id", [0])[0])
+                if trade_id > 0:
+                    cancel_trade(trade_id)
+            except Exception:
+                pass
+            self.send_response(302)
+            self.send_header("Location", "/positions")
+            self.end_headers()
+            return
+
+        elif path == "trade/cancel-bulk":
+            try:
+                ids_str = params.get("ids", [""])[0]
+                ids = [int(x.strip()) for x in ids_str.split(",") if x.strip().isdigit()]
+                if ids:
+                    cancel_trades_bulk(ids)
+            except Exception:
+                pass
+            self.send_response(302)
+            self.send_header("Location", "/positions")
+            self.end_headers()
+            return
 
         self.send_response(302)
         self.send_header("Location", "/dashboard")

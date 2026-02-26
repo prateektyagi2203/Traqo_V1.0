@@ -2277,6 +2277,181 @@ PATTERN_KB = {
 
 
 # ============================================================
+# HORIZON PROFILES PER PATTERN
+# Maps each pattern to its suitability across different holding periods.
+# Suitability scale: "high" > "medium" > "low" > "very_low"
+# Derived from pattern formation time, signal decay rate, and literature.
+# ============================================================
+
+# --- Default profiles by pattern archetype ---
+_HP_SINGLE_REVERSAL = {
+    "optimal_holding": "1-3 days",
+    "btst_1d":   {"suitability": "high",     "note": "Single-candle reversal — immediate signal, ideal for BTST"},
+    "swing_3d":  {"suitability": "high",     "note": "Signal still fresh within 3 days"},
+    "swing_5d":  {"suitability": "medium",   "note": "Signal starts to decay after 3 days"},
+    "swing_10d": {"suitability": "low",      "note": "Single-candle signal unreliable over 10 days"},
+    "swing_25d": {"suitability": "very_low", "note": "Too short-lived for positional trades"},
+}
+
+_HP_SINGLE_INDECISION = {
+    "optimal_holding": "1-3 days",
+    "btst_1d":   {"suitability": "medium",   "note": "Indecision candle — needs next-day confirmation"},
+    "swing_3d":  {"suitability": "medium",   "note": "Useful if confirmed within 2 bars"},
+    "swing_5d":  {"suitability": "low",      "note": "Indecision decays quickly without follow-through"},
+    "swing_10d": {"suitability": "very_low", "note": "No directional conviction for 10-day hold"},
+    "swing_25d": {"suitability": "very_low", "note": "Meaningless for positional trades"},
+}
+
+_HP_DOUBLE_REVERSAL = {
+    "optimal_holding": "3-5 days",
+    "btst_1d":   {"suitability": "medium",   "note": "Two-candle pattern — may still be forming at EOD"},
+    "swing_3d":  {"suitability": "high",     "note": "Optimal window for double-candle reversal"},
+    "swing_5d":  {"suitability": "high",     "note": "Strong within 5-day swing horizon"},
+    "swing_10d": {"suitability": "medium",   "note": "Moderate reliability over 10 days"},
+    "swing_25d": {"suitability": "low",      "note": "Signal typically exhausted before 25 days"},
+}
+
+_HP_DOUBLE_CONTINUATION = {
+    "optimal_holding": "3-10 days",
+    "btst_1d":   {"suitability": "low",      "note": "Continuation needs time to develop"},
+    "swing_3d":  {"suitability": "medium",   "note": "Early trend resumption visible by day 3"},
+    "swing_5d":  {"suitability": "high",     "note": "Good fit for continuation swing"},
+    "swing_10d": {"suitability": "high",     "note": "Trend continuation plays well over 10 days"},
+    "swing_25d": {"suitability": "medium",   "note": "Depends on broader trend strength"},
+}
+
+_HP_TRIPLE_REVERSAL = {
+    "optimal_holding": "3-10 days",
+    "btst_1d":   {"suitability": "low",      "note": "Three-candle setup — BTST too early for full signal"},
+    "swing_3d":  {"suitability": "high",     "note": "Optimal for triple-candle reversal follow-through"},
+    "swing_5d":  {"suitability": "high",     "note": "Strong reliability in 5-day window"},
+    "swing_10d": {"suitability": "high",     "note": "Major reversals persist 10 days"},
+    "swing_25d": {"suitability": "medium",   "note": "Can mark trend change if at key level"},
+}
+
+_HP_TRIPLE_STRONG_REVERSAL = {
+    "optimal_holding": "5-25 days",
+    "btst_1d":   {"suitability": "low",      "note": "Strong reversal needs room to develop"},
+    "swing_3d":  {"suitability": "medium",   "note": "Early gains visible but pattern still unfolding"},
+    "swing_5d":  {"suitability": "high",     "note": "Full reversal move typically captured by day 5"},
+    "swing_10d": {"suitability": "high",     "note": "High-conviction pattern holds well over 10 days"},
+    "swing_25d": {"suitability": "high",     "note": "Strong enough to mark major trend reversal"},
+}
+
+_HP_MULTI_CONTINUATION = {
+    "optimal_holding": "5-25 days",
+    "btst_1d":   {"suitability": "very_low", "note": "Multi-candle continuation too slow for BTST"},
+    "swing_3d":  {"suitability": "medium",   "note": "Trend resumption begins but not fully expressed"},
+    "swing_5d":  {"suitability": "high",     "note": "Trend continuation fully expressed by day 5"},
+    "swing_10d": {"suitability": "high",     "note": "Ideal horizon for multi-candle continuation"},
+    "swing_25d": {"suitability": "high",     "note": "Strong trend continuation extends to 25 days"},
+}
+
+# Per-pattern overrides (explicit mapping for each pattern in PATTERN_KB)
+PATTERN_HORIZON_PROFILES = {
+    # === Single-candle reversal ===
+    "hammer":           _HP_SINGLE_REVERSAL,
+    "inverted_hammer":  _HP_SINGLE_REVERSAL,
+    "shooting_star":    _HP_SINGLE_REVERSAL,
+    "hanging_man":      _HP_SINGLE_REVERSAL,
+    "dragonfly_doji":   _HP_SINGLE_REVERSAL,
+    "gravestone_doji":  _HP_SINGLE_REVERSAL,
+    "belt_hold":        _HP_SINGLE_REVERSAL,
+    "marubozu": {
+        "optimal_holding": "1-5 days",
+        "btst_1d":   {"suitability": "high",   "note": "Full-body candle — strong momentum for BTST"},
+        "swing_3d":  {"suitability": "high",   "note": "Momentum follow-through typical within 3 days"},
+        "swing_5d":  {"suitability": "medium", "note": "Momentum starts fading after 3 days"},
+        "swing_10d": {"suitability": "low",    "note": "One-candle momentum rarely lasts 10 days"},
+        "swing_25d": {"suitability": "very_low", "note": "Too short-lived for position trades"},
+    },
+
+    # === Single-candle indecision ===
+    "doji":             _HP_SINGLE_INDECISION,
+    "long_legged_doji": _HP_SINGLE_INDECISION,
+    "high_wave":        _HP_SINGLE_INDECISION,
+    "spinning_top":     _HP_SINGLE_INDECISION,
+
+    # === Double-candle reversal ===
+    "bullish_engulfing": _HP_DOUBLE_REVERSAL,
+    "bearish_engulfing": _HP_DOUBLE_REVERSAL,
+    "piercing_line":     _HP_DOUBLE_REVERSAL,
+    "dark_cloud_cover":  _HP_DOUBLE_REVERSAL,
+    "bullish_harami":    _HP_DOUBLE_REVERSAL,
+    "bearish_harami":    _HP_DOUBLE_REVERSAL,
+    "harami_cross":      _HP_DOUBLE_REVERSAL,
+    "tweezer_top":       _HP_DOUBLE_REVERSAL,
+    "tweezer_bottom":    _HP_DOUBLE_REVERSAL,
+    "matching_high":     _HP_DOUBLE_REVERSAL,
+    "matching_low":      _HP_DOUBLE_REVERSAL,
+    "homing_pigeon":     _HP_DOUBLE_REVERSAL,
+
+    # === Double-candle continuation ===
+    "in_neck":           _HP_DOUBLE_CONTINUATION,
+    "on_neck":           _HP_DOUBLE_CONTINUATION,
+    "separating_lines":  _HP_DOUBLE_CONTINUATION,
+
+    # === Triple-candle reversal ===
+    "morning_star":          _HP_TRIPLE_REVERSAL,
+    "evening_star":          _HP_TRIPLE_REVERSAL,
+    "morning_doji_star":     _HP_TRIPLE_REVERSAL,
+    "evening_doji_star":     _HP_TRIPLE_REVERSAL,
+    "three_inside_up":       _HP_TRIPLE_REVERSAL,
+    "three_inside_down":     _HP_TRIPLE_REVERSAL,
+    "three_outside_up":      _HP_TRIPLE_REVERSAL,
+    "three_outside_down":    _HP_TRIPLE_REVERSAL,
+    "tri_star":              _HP_TRIPLE_REVERSAL,
+    "advance_block":         _HP_TRIPLE_REVERSAL,
+    "deliberation":          _HP_TRIPLE_REVERSAL,
+    "stick_sandwich":        _HP_TRIPLE_REVERSAL,
+    "upside_gap_two_crows":  _HP_TRIPLE_REVERSAL,
+    "unique_three_river":    _HP_TRIPLE_REVERSAL,
+    "three_stars_south":     _HP_TRIPLE_REVERSAL,
+
+    # === Triple-candle strong reversal (high conviction, multi-day structure) ===
+    "abandoned_baby_bearish": _HP_TRIPLE_STRONG_REVERSAL,
+    "abandoned_baby_bullish": _HP_TRIPLE_STRONG_REVERSAL,
+    "three_white_soldiers":   _HP_TRIPLE_STRONG_REVERSAL,
+    "three_black_crows":      _HP_TRIPLE_STRONG_REVERSAL,
+    "ladder_bottom":          _HP_TRIPLE_STRONG_REVERSAL,
+    "concealing_baby_swallow": _HP_TRIPLE_STRONG_REVERSAL,
+
+    # === Multi-candle continuation ===
+    "rising_three_methods":  _HP_MULTI_CONTINUATION,
+    "falling_three_methods": _HP_MULTI_CONTINUATION,
+    "mat_hold":              _HP_MULTI_CONTINUATION,
+    "upside_tasuki_gap":     _HP_MULTI_CONTINUATION,
+    "downside_tasuki_gap":   _HP_MULTI_CONTINUATION,
+}
+
+
+def _enrich_pattern_kb_with_horizons():
+    """Merge horizon_profile into each PATTERN_KB entry at import time."""
+    for pname, entry in PATTERN_KB.items():
+        profile = PATTERN_HORIZON_PROFILES.get(pname)
+        if profile:
+            entry["horizon_profile"] = profile
+        else:
+            # Fallback: derive from pattern type
+            ptype = entry.get("type", "single")
+            signal = entry.get("signal", "reversal")
+            if "continuation" in signal:
+                entry["horizon_profile"] = (
+                    _HP_MULTI_CONTINUATION if ptype in ("triple", "quad", "multi")
+                    else _HP_DOUBLE_CONTINUATION
+                )
+            elif ptype == "single":
+                entry["horizon_profile"] = _HP_SINGLE_REVERSAL
+            elif ptype == "double":
+                entry["horizon_profile"] = _HP_DOUBLE_REVERSAL
+            else:
+                entry["horizon_profile"] = _HP_TRIPLE_REVERSAL
+
+
+_enrich_pattern_kb_with_horizons()
+
+
+# ============================================================
 # VOLUME ANALYSIS RULES (from Anna Coulling)
 # ============================================================
 
@@ -2868,6 +3043,40 @@ def get_all_pattern_names():
     return list(PATTERN_KB.keys())
 
 
+def get_pattern_horizon_profile(pattern_name, horizon_label=None):
+    """Get horizon suitability profile for a pattern.
+
+    Args:
+        pattern_name: Pattern key (e.g. 'hammer', 'morning_star')
+        horizon_label: Optional specific horizon (e.g. 'swing_5d') to get
+                       just that horizon's suitability dict.
+
+    Returns:
+        Full horizon_profile dict, or single horizon entry if horizon_label given.
+        Returns None if pattern not found.
+    """
+    entry = PATTERN_KB.get(pattern_name.strip().lower())
+    if not entry:
+        return None
+    profile = entry.get("horizon_profile", {})
+    if horizon_label:
+        key = horizon_label.lower().replace("-", "_")
+        return profile.get(key)
+    return profile
+
+
+def get_horizon_suitability_score(pattern_name, horizon_label):
+    """Convert suitability text to numeric score for a pattern + horizon.
+
+    Returns float: high=1.0, medium=0.7, low=0.4, very_low=0.2, unknown=0.5
+    """
+    _SCORES = {"high": 1.0, "medium": 0.7, "low": 0.4, "very_low": 0.2}
+    info = get_pattern_horizon_profile(pattern_name, horizon_label)
+    if info and isinstance(info, dict):
+        return _SCORES.get(info.get("suitability", ""), 0.5)
+    return 0.5
+
+
 def get_pattern_context_text(pattern_names, indicators=None):
     """
     Build a rich context text block for Ollama prompt injection.
@@ -2891,6 +3100,18 @@ def get_pattern_context_text(pattern_names, indicators=None):
         sections.append(f"Type: {entry['type']} | Signal: {entry['signal']} | Reliability: {entry['reliability']:.0%}")
         sections.append(f"Sources: {', '.join(entry.get('sources', []))}")
         sections.append(f"Description: {entry['description']}")
+
+        # Horizon suitability
+        hp = entry.get('horizon_profile')
+        if hp:
+            sections.append(f"Optimal Holding: {hp.get('optimal_holding', 'N/A')}")
+            hz_parts = []
+            for hk in ("btst_1d", "swing_3d", "swing_5d", "swing_10d", "swing_25d"):
+                hv = hp.get(hk, {})
+                if hv:
+                    hz_parts.append(f"{hk}={hv.get('suitability', '?')}")
+            if hz_parts:
+                sections.append(f"Horizon Suitability: {', '.join(hz_parts)}")
 
         if entry.get('formation_rules'):
             sections.append("Formation Rules:")

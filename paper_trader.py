@@ -3,7 +3,7 @@ Paper Trader Engine — Fully Automated Backtesting-on-Live-Data
 ================================================================
 Runs autonomously without human intervention:
   1. On startup: catches up on any missed trading days
-  2. Scans ALL RAG-backed stocks across ALL 5 horizons (1d, 3d, 5d, 10d, 25d)
+  2. Scans ALL RAG-backed stocks across 4 horizons (1d, 3d, 5d, 10d)  [25d removed]
   3. Auto-enters every qualifying signal into paper portfolio
   4. Monitors open positions — closes on SL hit / target hit / expiry
   5. Feeds outcomes back to RAG learning engine
@@ -54,6 +54,7 @@ from trading_config import (
 # ============================================================
 DB_PATH = "paper_trades/paper_trades.db"
 LOG_DIR = "paper_trades/logs"
+PENDING_SIGNALS_FILE = "paper_trades/pending_signals.json"
 os.makedirs("paper_trades", exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -79,7 +80,7 @@ HORIZON_CONFIG = {
     3:  {"sl_mult_scale": 0.8,  "sl_cap": 3.5, "rr_min": 1.8, "label": "Swing_3d"},
     5:  {"sl_mult_scale": 1.0,  "sl_cap": 5.0, "rr_min": 2.0, "label": "Swing_5d"},
     10: {"sl_mult_scale": 1.2,  "sl_cap": 5.0, "rr_min": 2.0, "label": "Swing_10d"},
-    25: {"sl_mult_scale": 1.5,  "sl_cap": 6.0, "rr_min": 2.0, "label": "Swing_25d"},
+    # 25d removed from scope — not in RAG target horizons
 }
 
 # All stocks to scan
@@ -269,6 +270,36 @@ class PaperTradeDB:
             CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
             CREATE INDEX IF NOT EXISTS idx_trades_entry_date ON trades(entry_date);
             CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker);
+
+            CREATE TABLE IF NOT EXISTS shadow_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                instrument TEXT,
+                direction TEXT NOT NULL,
+                horizon_days INTEGER NOT NULL,
+                horizon_label TEXT,
+                patterns TEXT,
+                entry_price REAL NOT NULL,
+                target_price REAL NOT NULL,
+                sl_price REAL NOT NULL,
+                target_pct REAL,
+                sl_pct REAL,
+                predicted_win_rate REAL,
+                predicted_pf REAL,
+                confidence TEXT,
+                skip_reasons TEXT,
+                entry_date TEXT NOT NULL,
+                expiry_date TEXT NOT NULL,
+                status TEXT DEFAULT 'SHADOW_OPEN',
+                exit_price REAL,
+                exit_date TEXT,
+                exit_reason TEXT,
+                actual_return_pct REAL,
+                created_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(ticker, horizon_days, entry_date)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_shadow_status ON shadow_trades(status);
         """)
         self.conn.commit()
 
@@ -459,6 +490,102 @@ class PaperTradeDB:
     def close(self):
         self.conn.close()
 
+    # ---- SHADOW TRADES (#6) ----
+
+    def insert_shadow_trade(self, trade: dict) -> Optional[int]:
+        """Insert a shadow trade (filtered signal tracked without capital)."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute("""
+                INSERT INTO shadow_trades (
+                    ticker, instrument, direction, horizon_days, horizon_label,
+                    patterns, entry_price, target_price, sl_price,
+                    target_pct, sl_pct, predicted_win_rate, predicted_pf,
+                    confidence, skip_reasons, entry_date, expiry_date
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                trade["ticker"], trade.get("instrument"), trade["direction"],
+                trade["horizon_days"], trade.get("horizon_label"),
+                trade.get("patterns", ""), trade["entry_price"],
+                trade["target_price"], trade["sl_price"],
+                trade.get("target_pct"), trade.get("sl_pct"),
+                trade.get("predicted_win_rate"), trade.get("predicted_pf"),
+                trade.get("confidence"),
+                json.dumps(trade.get("skip_reasons", [])),
+                trade["entry_date"], trade["expiry_date"],
+            ))
+            self.conn.commit()
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+    def get_open_shadow_trades(self) -> List[dict]:
+        cur = self.conn.execute(
+            "SELECT * FROM shadow_trades WHERE status='SHADOW_OPEN' ORDER BY entry_date")
+        return [dict(r) for r in cur.fetchall()]
+
+    def close_shadow_trade(self, trade_id: int, exit_price: float, exit_date: str,
+                           exit_reason: str, actual_return_pct: float, status: str):
+        self.conn.execute("""
+            UPDATE shadow_trades SET status=?, exit_price=?, exit_date=?,
+                exit_reason=?, actual_return_pct=?
+            WHERE id=?
+        """, (status, exit_price, exit_date, exit_reason, actual_return_pct, trade_id))
+        self.conn.commit()
+
+    def get_shadow_stats(self) -> dict:
+        """Compare shadow trade performance vs real trades, overall and per-horizon."""
+        c = self.conn
+        sh_closed = c.execute("SELECT COUNT(*) FROM shadow_trades WHERE status!='SHADOW_OPEN'").fetchone()[0]
+        sh_wins = c.execute("SELECT COUNT(*) FROM shadow_trades WHERE status IN ('SHADOW_WON','SHADOW_EXPIRED_WIN')").fetchone()[0]
+        sh_losses = c.execute("SELECT COUNT(*) FROM shadow_trades WHERE status IN ('SHADOW_LOST','SHADOW_EXPIRED_LOSS')").fetchone()[0]
+        sh_avg_ret = c.execute("SELECT AVG(actual_return_pct) FROM shadow_trades WHERE status!='SHADOW_OPEN'").fetchone()[0] or 0
+        sh_wr = (sh_wins / sh_closed * 100) if sh_closed else 0
+
+        real_closed = c.execute("SELECT COUNT(*) FROM trades WHERE status!='OPEN'").fetchone()[0]
+        real_wins = c.execute("SELECT COUNT(*) FROM trades WHERE status IN ('WON','EXPIRED_WIN')").fetchone()[0]
+        real_wr = (real_wins / real_closed * 100) if real_closed else 0
+
+        # Per-horizon shadow stats
+        hz_stats = {}
+        rows = c.execute("""
+            SELECT horizon_label,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN status IN ('SHADOW_WON','SHADOW_EXPIRED_WIN') THEN 1 ELSE 0 END) as wins
+            FROM shadow_trades WHERE status!='SHADOW_OPEN'
+            GROUP BY horizon_label
+        """).fetchall()
+        for row in rows:
+            h_label, h_total, h_wins = row
+            hz_stats[h_label] = {
+                "closed": h_total, "wins": h_wins,
+                "win_rate": round(h_wins / h_total * 100, 1) if h_total else 0,
+            }
+
+        # Per-horizon real stats for comparison
+        real_hz_rows = c.execute("""
+            SELECT horizon_label,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN status IN ('WON','EXPIRED_WIN') THEN 1 ELSE 0 END) as wins
+            FROM trades WHERE status!='OPEN'
+            GROUP BY horizon_label
+        """).fetchall()
+        for row in real_hz_rows:
+            h_label, h_total, h_wins = row
+            real_hz_wr = round(h_wins / h_total * 100, 1) if h_total else 0
+            if h_label in hz_stats:
+                hz_stats[h_label]["real_win_rate"] = real_hz_wr
+                hz_stats[h_label]["filter_alpha"] = round(real_hz_wr - hz_stats[h_label]["win_rate"], 1)
+
+        return {
+            "shadow_closed": sh_closed, "shadow_wins": sh_wins,
+            "shadow_losses": sh_losses, "shadow_win_rate": round(sh_wr, 1),
+            "shadow_avg_return": round(sh_avg_ret, 2),
+            "real_closed": real_closed, "real_win_rate": round(real_wr, 1),
+            "filter_alpha": round(real_wr - sh_wr, 1),  # positive = filters are adding value
+            "per_horizon": hz_stats,
+        }
+
 
 # ============================================================
 # PAPER TRADER ENGINE
@@ -513,6 +640,9 @@ class PaperTrader:
 
         # 5. FEED OUTCOMES TO RAG
         self.feed_outcomes_to_rag()
+
+        # 6. RELOAD FEEDBACK so next scan (or catchup) uses updated learnings
+        self.sp.reload_feedback()
 
         log.info(f"RUN COMPLETE: {json.dumps(summary, indent=2)}")
         return summary
@@ -596,6 +726,7 @@ class PaperTrader:
         signals_found = 0
         trades_entered = 0
         errors = 0
+        filtered_for_shadow = []  # collect filtered signals for shadow tracking
 
         for i, ticker in enumerate(SCAN_TICKERS):
             try:
@@ -607,21 +738,80 @@ class PaperTrader:
                 for days, hz_data in horizon_levels.items():
                     signals_found += 1
                     # Filters
-                    if result.get("win_rate", 0) < MIN_WIN_RATE:
-                        continue
-                    if result.get("confidence", "LOW") == "LOW":
-                        continue
-                    if hz_data.get("rr_ratio", 0) < MIN_RR_RATIO:
+                    skip_reasons = []
+                    h_label = HORIZON_CONFIG[days]["label"]
+
+                    # Horizon-specific WR override
+                    base_wr = result.get("win_rate", 0)
+                    hz_wr, hz_src = self.sp.get_horizon_feedback(
+                        result.get("patterns_tradeable", []),
+                        result.get("indicators", {}).get("trend_short"),
+                        h_label,
+                    )
+                    wr = hz_wr if hz_wr is not None else base_wr
+
+                    # Standard filters
+                    conf = result.get("confidence", "LOW")
+                    rr = hz_data.get("rr_ratio", 0)
+
+                    # Feedback-based filter adjustments
+                    fb_penalties = self.sp.feedback_filter_penalties
+                    fb_boosts = self.sp.feedback_filter_boosts
+                    hz_penalties = self.sp.feedback_horizon_filter_penalties
+                    hz_boosts = self.sp.feedback_horizon_filter_boosts
+                    wr_threshold = MIN_WIN_RATE
+                    rr_threshold = MIN_RR_RATIO
+
+                    # Check horizon-specific penalties/boosts first
+                    for pat in result.get("patterns_tradeable", []):
+                        hkey = f"{pat}__{h_label}"
+                        if hkey in hz_penalties:
+                            skip_reasons.append(f"Horizon penalty: {hz_penalties[hkey]['reason']} ({h_label})")
+                        elif pat in fb_penalties:
+                            skip_reasons.append(f"Feedback penalty: {fb_penalties[pat]['reason']}")
+                        if hkey in hz_boosts:
+                            wr_threshold = max(40.0, wr_threshold - 8.0)
+                            rr_threshold = max(1.0, rr_threshold - 0.3)
+                        elif pat in fb_boosts:
+                            wr_threshold = max(45.0, wr_threshold - 5.0)
+                            rr_threshold = max(1.2, rr_threshold - 0.2)
+
+                    if wr < wr_threshold:
+                        skip_reasons.append("Low Win Rate")
+                    if conf == "LOW":
+                        skip_reasons.append("Low Confidence")
+                    if rr < rr_threshold:
+                        skip_reasons.append("Low R:R Ratio")
+
+                    if skip_reasons:
+                        # Collect for shadow sampling
+                        expiry = add_trading_days(scan_date, days)
+                        hz_direction = hz_data.get("direction", result["direction"])
+                        filtered_for_shadow.append({
+                            "ticker": ticker, "instrument": result.get("instrument"),
+                            "direction": hz_direction, "horizon_days": days,
+                            "horizon_label": h_label,
+                            "patterns": ",".join(result.get("patterns_tradeable", [])),
+                            "entry_price": result["entry"],
+                            "target_price": hz_data["target"], "sl_price": hz_data["sl"],
+                            "target_pct": hz_data.get("target_pct"), "sl_pct": hz_data.get("sl_pct"),
+                            "predicted_win_rate": round(wr, 1),
+                            "predicted_pf": result.get("profit_factor"),
+                            "confidence": result.get("confidence"),
+                            "entry_date": date_str, "expiry_date": expiry.isoformat(),
+                            "skip_reasons": skip_reasons,
+                        })
                         continue
 
                     expiry = add_trading_days(scan_date, days)
+                    hz_direction = hz_data.get("direction", result["direction"])
                     trade = {
                         "ticker": ticker,
                         "instrument": result.get("instrument"),
                         "sector": result.get("sector"),
-                        "direction": result["direction"],
+                        "direction": hz_direction,
                         "horizon_days": days,
-                        "horizon_label": HORIZON_CONFIG[days]["label"],
+                        "horizon_label": h_label,
                         "patterns": ",".join(result.get("patterns_tradeable", [])),
                         "entry_price": result["entry"],
                         "target_price": hz_data["target"],
@@ -629,7 +819,7 @@ class PaperTrader:
                         "target_pct": hz_data.get("target_pct"),
                         "sl_pct": hz_data.get("sl_pct"),
                         "rr_ratio": hz_data.get("rr_ratio"),
-                        "predicted_win_rate": result.get("win_rate"),
+                        "predicted_win_rate": round(wr, 1),
                         "predicted_pf": result.get("profit_factor"),
                         "confidence": result.get("confidence"),
                         "n_matches": result.get("n_matches"),
@@ -641,10 +831,11 @@ class PaperTrader:
                     row_id = self.db.insert_trade(trade)
                     if row_id:
                         trades_entered += 1
-                        log.info(f"  ENTER: {ticker} {HORIZON_CONFIG[days]['label']} "
+                        log.info(f"  ENTER: {ticker} {h_label} "
                                  f"{result['direction']} @ {result['entry']:.2f} "
-                                 f"(WR={result.get('win_rate',0):.0f}%, "
-                                 f"R:R={hz_data.get('rr_ratio',0):.1f}x)")
+                                 f"(WR={wr:.0f}%, "
+                                 f"R:R={hz_data.get('rr_ratio',0):.1f}x)"
+                                 f"{' [hz:' + hz_src + ']' if hz_src else ''}")
 
             except Exception as e:
                 errors += 1
@@ -654,11 +845,259 @@ class PaperTrader:
                 log.info(f"  Progress: {i+1}/{len(SCAN_TICKERS)}")
 
         duration = _time.time() - t0
+
+        # --- Shadow trades: sample ~20% of filtered signals (#6) ---
+        import random
+        if filtered_for_shadow:
+            shadow_n = max(1, len(filtered_for_shadow) // 5)
+            shadow_sample = random.sample(filtered_for_shadow, min(shadow_n, len(filtered_for_shadow)))
+            shadow_ok = sum(1 for s in shadow_sample if self.db.insert_shadow_trade(s))
+            if shadow_ok:
+                log.info(f"  SHADOW: Tracked {shadow_ok} filtered signals as shadow trades")
+
         self.db.log_scan(date_str, len(SCAN_TICKERS), signals_found, trades_entered, errors, duration)
         log.info(f"SCAN DONE: {signals_found} signals, {trades_entered} entered, "
                  f"{errors} errors in {duration:.1f}s")
         return {"signals_found": signals_found, "trades_entered": trades_entered,
                 "errors": errors, "duration": duration}
+
+    # ----------------------------------------------------------
+    # SCAN PREVIEW (signals only — no auto-entry)
+    # ----------------------------------------------------------
+    def scan_preview(self, scan_date: date) -> dict:
+        """Scan for signals but do NOT enter any trades.
+        Writes all qualifying + filtered signals to a staging JSON file
+        so the user can review and approve/discard from the dashboard."""
+        date_str = scan_date.isoformat()
+
+        log.info(f"SCAN PREVIEW: {len(SCAN_TICKERS)} stocks for {date_str}...")
+        t0 = _time.time()
+        all_signals = []       # signals that passed filters (would be entered)
+        skipped_signals = []   # signals that were filtered out
+        errors = 0
+
+        for i, ticker in enumerate(SCAN_TICKERS):
+            try:
+                result = self._analyse_ticker(ticker)
+                if not result or result.get("error") or result.get("direction") == "NO SIGNAL":
+                    continue
+
+                horizon_levels = result.get("horizon_levels", {})
+                for days, hz_data in horizon_levels.items():
+                    expiry = add_trading_days(scan_date, days)
+                    h_label = HORIZON_CONFIG[days]["label"]
+
+                    # Horizon-specific WR override
+                    base_wr = result.get("win_rate", 0)
+                    hz_wr, hz_src = self.sp.get_horizon_feedback(
+                        result.get("patterns_tradeable", []),
+                        result.get("indicators", {}).get("trend_short"),
+                        h_label,
+                    )
+                    wr = hz_wr if hz_wr is not None else base_wr
+
+                    signal = {
+                        "ticker": ticker,
+                        "instrument": result.get("instrument"),
+                        "sector": result.get("sector"),
+                        "direction": hz_data.get("direction", result["direction"]),
+                        "horizon_days": days,
+                        "horizon_label": h_label,
+                        "patterns": ",".join(result.get("patterns_tradeable", [])),
+                        "entry_price": round(result["entry"], 2),
+                        "target_price": round(hz_data["target"], 2),
+                        "sl_price": round(hz_data["sl"], 2),
+                        "target_pct": hz_data.get("target_pct"),
+                        "sl_pct": hz_data.get("sl_pct"),
+                        "rr_ratio": hz_data.get("rr_ratio"),
+                        "predicted_win_rate": round(wr, 1),
+                        "predicted_pf": result.get("profit_factor"),
+                        "confidence": result.get("confidence"),
+                        "n_matches": result.get("n_matches"),
+                        "match_tier": result.get("match_tier"),
+                        "entry_date": date_str,
+                        "expiry_date": expiry.isoformat(),
+                        "indicators": result.get("indicators", {}),
+                    }
+                    if hz_src:
+                        signal["horizon_feedback_source"] = hz_src
+
+                    # Check filters and record skip reason
+                    skip_reasons = []
+
+                    # Feedback-based filter adjustments — horizon-aware
+                    conf = result.get("confidence", "LOW")
+                    rr = hz_data.get("rr_ratio", 0)
+                    fb_penalties = self.sp.feedback_filter_penalties
+                    fb_boosts = self.sp.feedback_filter_boosts
+                    hz_penalties = self.sp.feedback_horizon_filter_penalties
+                    hz_boosts = self.sp.feedback_horizon_filter_boosts
+                    wr_threshold = MIN_WIN_RATE
+                    rr_threshold = MIN_RR_RATIO
+
+                    for pat in result.get("patterns_tradeable", []):
+                        hkey = f"{pat}__{h_label}"
+                        if hkey in hz_penalties:
+                            skip_reasons.append(f"Horizon penalty: {hz_penalties[hkey]['reason']} ({h_label})")
+                        elif pat in fb_penalties:
+                            skip_reasons.append(f"Feedback penalty: {fb_penalties[pat]['reason']}")
+                        if hkey in hz_boosts:
+                            wr_threshold = max(40.0, wr_threshold - 8.0)
+                            rr_threshold = max(1.0, rr_threshold - 0.3)
+                        elif pat in fb_boosts:
+                            wr_threshold = max(45.0, wr_threshold - 5.0)
+                            rr_threshold = max(1.2, rr_threshold - 0.2)
+
+                    if wr < wr_threshold:
+                        skip_reasons.append(f"Win rate {wr:.1f}% < {wr_threshold}%")
+                    if conf == "LOW":
+                        skip_reasons.append(f"Confidence LOW (need MEDIUM+)")
+                    if rr < rr_threshold:
+                        skip_reasons.append(f"R:R {rr:.1f}x < {rr_threshold}x")
+
+                    # Check for duplicate in DB
+                    existing = self.db.conn.execute(
+                        "SELECT 1 FROM trades WHERE ticker=? AND horizon_days=? AND entry_date=?",
+                        (ticker, days, date_str)
+                    ).fetchone()
+                    if existing:
+                        skip_reasons.append("Duplicate — already in DB")
+
+                    if skip_reasons:
+                        signal["skip_reasons"] = skip_reasons
+                        signal["status"] = "FILTERED"
+                        skipped_signals.append(signal)
+                    else:
+                        signal["skip_reasons"] = []
+                        signal["status"] = "PENDING"
+                        all_signals.append(signal)
+
+            except Exception as e:
+                errors += 1
+                log.warning(f"  Error {ticker}: {e}")
+
+            if (i + 1) % 10 == 0:
+                log.info(f"  Progress: {i+1}/{len(SCAN_TICKERS)}")
+
+        duration = _time.time() - t0
+
+        # Build skip reason summary
+        reason_counts = {}
+        for s in skipped_signals:
+            for r in s["skip_reasons"]:
+                # Normalize reason to category
+                if "Win rate" in r:
+                    cat = "Low Win Rate"
+                elif "Confidence" in r:
+                    cat = "Low Confidence"
+                elif "R:R" in r:
+                    cat = "Low R:R Ratio"
+                elif "Duplicate" in r:
+                    cat = "Duplicate Trade"
+                elif "Feedback penalty" in r:
+                    cat = "Feedback Penalty"
+                elif "Horizon penalty" in r:
+                    cat = "Horizon Penalty"
+                else:
+                    cat = r
+                reason_counts[cat] = reason_counts.get(cat, 0) + 1
+
+        total_signals = len(all_signals) + len(skipped_signals)
+
+        # --- Shadow trades: sample ~20% of filtered signals (#6) ---
+        import random
+        shadow_candidates = [s for s in skipped_signals if "Duplicate" not in str(s.get("skip_reasons", []))]
+        shadow_sample_size = max(1, len(shadow_candidates) // 5)  # ~20%
+        shadow_sampled = random.sample(shadow_candidates, min(shadow_sample_size, len(shadow_candidates))) if shadow_candidates else []
+        shadow_entered = 0
+        for sig in shadow_sampled:
+            sh_id = self.db.insert_shadow_trade(sig)
+            if sh_id:
+                shadow_entered += 1
+        if shadow_entered:
+            log.info(f"  SHADOW: Tracked {shadow_entered}/{len(shadow_candidates)} filtered signals as shadow trades")
+
+        # Write staging file
+        staging = {
+            "scan_date": date_str,
+            "scanned_at": datetime.now().isoformat(),
+            "total_signals": total_signals,
+            "qualifying": len(all_signals),
+            "filtered_out": len(skipped_signals),
+            "errors": errors,
+            "duration": round(duration, 1),
+            "skip_reason_summary": reason_counts,
+            "signals": all_signals,
+            "skipped": skipped_signals,
+        }
+        with open(PENDING_SIGNALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(staging, f, indent=2, default=str)
+
+        log.info(f"SCAN PREVIEW DONE: {total_signals} signals found, "
+                 f"{len(all_signals)} qualifying, {len(skipped_signals)} filtered out, "
+                 f"{errors} errors in {duration:.1f}s")
+        for cat, cnt in sorted(reason_counts.items(), key=lambda x: -x[1]):
+            log.info(f"  Filtered: {cnt} — {cat}")
+        log.info(f"Pending signals saved to {PENDING_SIGNALS_FILE}")
+        log.info(f"Awaiting user approval on dashboard...")
+
+        return {
+            "total_signals": total_signals,
+            "qualifying": len(all_signals),
+            "filtered_out": len(skipped_signals),
+            "errors": errors,
+            "duration": duration,
+            "skip_reason_summary": reason_counts,
+        }
+
+    def approve_signals(self, approved_indices: List[int] = None) -> dict:
+        """Read pending signals file and enter approved trades into DB.
+        If approved_indices is None, approve ALL qualifying signals.
+        Otherwise, only approve signals at the given indices."""
+        if not os.path.exists(PENDING_SIGNALS_FILE):
+            log.warning("No pending signals file found")
+            return {"entered": 0, "error": "No pending signals"}
+
+        with open(PENDING_SIGNALS_FILE, "r", encoding="utf-8") as f:
+            staging = json.load(f)
+
+        signals = staging.get("signals", [])
+        if not signals:
+            log.info("No qualifying signals to approve")
+            return {"entered": 0, "discarded": 0}
+
+        if approved_indices is None:
+            approved_indices = list(range(len(signals)))
+
+        entered = 0
+        skipped = 0
+        for idx in approved_indices:
+            if idx < 0 or idx >= len(signals):
+                continue
+            sig = signals[idx]
+            trade = {k: v for k, v in sig.items() if k not in ("skip_reasons", "status")}
+            row_id = self.db.insert_trade(trade)
+            if row_id:
+                entered += 1
+                log.info(f"  APPROVED: {sig['ticker']} {sig['horizon_label']} "
+                         f"{sig['direction']} @ {sig['entry_price']:.2f}")
+            else:
+                skipped += 1
+                log.info(f"  SKIPPED (dup): {sig['ticker']} {sig['horizon_label']}")
+
+        discarded = len(signals) - len(approved_indices)
+
+        # Log the scan now that we've committed
+        scan_date_str = staging.get("scan_date", date.today().isoformat())
+        total_signals = staging.get("total_signals", 0)
+        errors = staging.get("errors", 0)
+        duration = staging.get("duration", 0)
+        self.db.log_scan(scan_date_str, len(SCAN_TICKERS), total_signals, entered, errors, duration)
+
+        # Remove staging file
+        os.remove(PENDING_SIGNALS_FILE)
+        log.info(f"APPROVE DONE: {entered} entered, {skipped} duplicates, {discarded} discarded")
+        return {"entered": entered, "duplicates": skipped, "discarded": discarded}
 
     def _analyse_ticker(self, ticker: str) -> Optional[dict]:
         """Analyse a single ticker for signals across all horizons."""
@@ -713,9 +1152,17 @@ class PaperTrader:
             h_sl_pct = max(SL_FLOOR_PCT, min(cfg["sl_cap"], h_sl_pct))
             hk = horizons_data.get(f"+{days}_candles", {})
             h_avg_ret = abs(hk.get("avg_return", 0)) if hk else 0
+
+            # Per-horizon direction: use horizon-specific direction if available
+            hz_direction = direction  # default to primary
+            if hk:
+                hz_dir_raw = hk.get("direction", "").upper()
+                if hz_dir_raw in ("BULLISH", "BEARISH"):
+                    hz_direction = hz_dir_raw
+
             h_target_pct = max(h_sl_pct * cfg["rr_min"], h_avg_ret) if h_avg_ret > 0 \
                 else h_sl_pct * cfg["rr_min"]
-            if direction == "BULLISH":
+            if hz_direction == "BULLISH":
                 h_sl = round(current_price * (1 - h_sl_pct / 100), 2)
                 h_target = round(current_price * (1 + h_target_pct / 100), 2)
             else:
@@ -725,6 +1172,7 @@ class PaperTrader:
                 "sl": h_sl, "target": h_target,
                 "sl_pct": round(h_sl_pct, 2), "target_pct": round(h_target_pct, 2),
                 "rr_ratio": round(h_target_pct / h_sl_pct, 1) if h_sl_pct > 0 else 0,
+                "direction": hz_direction,
             }
 
         return {
@@ -856,8 +1304,12 @@ class PaperTrader:
             except Exception as e:
                 log.warning(f"  Monitor error {ticker}: {e}")
 
-        log.info(f"MONITOR DONE: {checked} checked, {closed} closed")
-        return {"checked": checked, "closed": closed}
+        # --- Monitor shadow trades (#6) ---
+        shadow_closed = self._monitor_shadow_trades(check_date)
+
+        log.info(f"MONITOR DONE: {checked} checked, {closed} closed"
+                 f"{f', {shadow_closed} shadow closed' if shadow_closed else ''}")
+        return {"checked": checked, "closed": closed, "shadow_closed": shadow_closed}
 
     def _check_trade_exit(self, trade: dict, high: float, low: float,
                           close: float) -> Optional[dict]:
@@ -886,6 +1338,75 @@ class PaperTrader:
         if trade["direction"] == "BULLISH":
             return round((exit_price - entry) / entry * 100, 2)
         return round((entry - exit_price) / entry * 100, 2)
+
+    # ----------------------------------------------------------
+    # SHADOW TRADE MONITOR (#6)
+    # ----------------------------------------------------------
+    def _monitor_shadow_trades(self, check_date: date = None) -> int:
+        """Monitor shadow trades the same way as real trades, but without any action."""
+        if check_date is None:
+            check_date = date.today()
+
+        open_shadows = self.db.get_open_shadow_trades()
+        if not open_shadows:
+            return 0
+
+        ticker_shadows = defaultdict(list)
+        for t in open_shadows:
+            ticker_shadows[t["ticker"]].append(t)
+
+        closed = 0
+        for ticker, trades in ticker_shadows.items():
+            try:
+                earliest = min(date.fromisoformat(t["entry_date"]) for t in trades)
+                start_str = (earliest - timedelta(days=3)).strftime("%Y-%m-%d")
+                end_str = (check_date + timedelta(days=1)).strftime("%Y-%m-%d")
+                df = yf.download(ticker, start=start_str, end=end_str, progress=False)
+                if df.empty:
+                    continue
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [c[0] for c in df.columns]
+                df.index = pd.to_datetime(df.index).date
+
+                for trade in trades:
+                    entry_dt = date.fromisoformat(trade["entry_date"])
+                    expiry_dt = date.fromisoformat(trade["expiry_date"])
+
+                    mask = (df.index > entry_dt) & (df.index <= min(check_date, expiry_dt))
+                    relevant = df.loc[mask]
+
+                    trade_closed = False
+                    for candle_date, row in relevant.iterrows():
+                        h, l, c = float(row["High"]), float(row["Low"]), float(row["Close"])
+                        result = self._check_trade_exit(trade, h, l, c)
+                        if result:
+                            d_str = candle_date.isoformat() if isinstance(candle_date, date) else str(candle_date)
+                            shadow_status = f"SHADOW_{result['status']}"
+                            self.db.close_shadow_trade(
+                                trade["id"], result["exit_price"], d_str,
+                                result["exit_reason"], result["actual_return_pct"],
+                                shadow_status,
+                            )
+                            closed += 1
+                            trade_closed = True
+                            break
+
+                    if not trade_closed and check_date >= expiry_dt:
+                        mask_exp = df.index <= expiry_dt
+                        if mask_exp.any():
+                            last_close = float(df.loc[mask_exp].iloc[-1]["Close"])
+                            ret = self._calc_return(trade, last_close)
+                            status = "SHADOW_EXPIRED_WIN" if ret > 0 else "SHADOW_EXPIRED_LOSS"
+                            self.db.close_shadow_trade(
+                                trade["id"], last_close, expiry_dt.isoformat(),
+                                "expired", ret, status,
+                            )
+                            closed += 1
+
+            except Exception as e:
+                log.warning(f"  Shadow monitor error {ticker}: {e}")
+
+        return closed
 
     # ----------------------------------------------------------
     # DAILY REPORT
@@ -971,28 +1492,220 @@ class PaperTrader:
             if len(feedback) < 3:
                 return
             learnings = _load_json(LEARNING_FILE, {"rules": [], "pattern_adjustments": {}, "updated_at": None})
-            pattern_stats = defaultdict(lambda: {"wins": 0, "losses": 0, "returns": [], "reasons": []})
+
+            # --- Temporal decay weights: half-life = 60 days ---
+            HALF_LIFE_DAYS = 60
+            now = datetime.now()
+            def _decay_weight(entry):
+                ts = entry.get("timestamp", "")
+                if not ts:
+                    return 0.5  # unknown date -> half weight
+                try:
+                    entry_dt = datetime.fromisoformat(ts) if "T" in ts else datetime.strptime(ts, "%Y-%m-%d")
+                    age_days = (now - entry_dt).days
+                    return 2 ** (-age_days / HALF_LIFE_DAYS)
+                except Exception:
+                    return 0.5
+
+            _default_stats = lambda: {"wins": 0, "losses": 0, "returns": [],
+                                      "reasons": [], "weighted_wins": 0.0,
+                                      "weighted_total": 0.0,
+                                      "vol_conf_wins": 0, "vol_conf_total": 0,
+                                      "vol_no_wins": 0, "vol_no_total": 0}
+            pattern_stats = defaultdict(_default_stats)
+
+            # --- Regime-segmented stats: pattern__trend -> stats ---
+            _default_regime = lambda: {"wins": 0, "losses": 0, "returns": [],
+                                       "weighted_wins": 0.0, "weighted_total": 0.0}
+            regime_stats = defaultdict(_default_regime)  # pattern__trend
+
+            # --- Horizon-segmented stats ---
+            horizon_stats = defaultdict(_default_regime)  # pattern__horizon_label
+            triple_stats = defaultdict(_default_regime)   # pattern__trend__horizon_label
+
+            # --- Sector-segmented stats ---
+            sector_stats = defaultdict(_default_regime)   # pattern__sector
+
             for entry in feedback:
+                w = _decay_weight(entry)
+                trend = entry.get("indicators_at_entry", {}).get("trend_short", "unknown")
+                vol_ratio = entry.get("indicators_at_entry", {}).get("vol_ratio", 1.0)
+                is_vol_confirmed = vol_ratio > 1.2 if vol_ratio else False
+                is_win = entry["outcome"] == "win"
+                # Horizon: top-level field, or fallback to parsing notes
+                h_label = entry.get("horizon_label", "")
+                if not h_label:
+                    notes = entry.get("notes", "")
+                    for lbl in ("BTST_1d", "Swing_3d", "Swing_5d", "Swing_10d"):
+                        if lbl in notes:
+                            h_label = lbl
+                            break
+                # Sector: top-level field, or fallback to instrument lookup
+                sector = entry.get("sector", "")
+                if not sector:
+                    inst = entry.get("instrument", "")
+                    sector = INSTRUMENT_SECTORS.get(inst, "unknown") if inst else "unknown"
+
                 for p in entry.get("patterns", []):
                     stats = pattern_stats[p]
-                    if entry["outcome"] == "win":
+                    if is_win:
                         stats["wins"] += 1
                     else:
                         stats["losses"] += 1
                     stats["returns"].append(entry.get("actual_return_pct", 0))
                     stats["reasons"].append(entry.get("exit_reason", ""))
+                    stats["weighted_wins"] += w if is_win else 0
+                    stats["weighted_total"] += w
+
+                    # Per-pattern volume stats (#5)
+                    if is_vol_confirmed:
+                        stats["vol_conf_total"] += 1
+                        if is_win:
+                            stats["vol_conf_wins"] += 1
+                    else:
+                        stats["vol_no_total"] += 1
+                        if is_win:
+                            stats["vol_no_wins"] += 1
+
+                    # Regime-segmented stats — pattern__trend
+                    rkey = f"{p}__{trend}"
+                    rs = regime_stats[rkey]
+                    if is_win:
+                        rs["wins"] += 1
+                    else:
+                        rs["losses"] += 1
+                    rs["returns"].append(entry.get("actual_return_pct", 0))
+                    rs["weighted_wins"] += w if is_win else 0
+                    rs["weighted_total"] += w
+
+                    # Horizon-segmented stats — pattern__horizon
+                    if h_label:
+                        hkey = f"{p}__{h_label}"
+                        hs = horizon_stats[hkey]
+                        if is_win: hs["wins"] += 1
+                        else: hs["losses"] += 1
+                        hs["returns"].append(entry.get("actual_return_pct", 0))
+                        hs["weighted_wins"] += w if is_win else 0
+                        hs["weighted_total"] += w
+
+                        # Triple-key stats — pattern__trend__horizon
+                        tkey = f"{p}__{trend}__{h_label}"
+                        ts = triple_stats[tkey]
+                        if is_win: ts["wins"] += 1
+                        else: ts["losses"] += 1
+                        ts["returns"].append(entry.get("actual_return_pct", 0))
+                        ts["weighted_wins"] += w if is_win else 0
+                        ts["weighted_total"] += w
+
+                    # Sector-segmented stats — pattern__sector
+                    if sector and sector != "unknown":
+                        skey = f"{p}__{sector}"
+                        ss = sector_stats[skey]
+                        if is_win: ss["wins"] += 1
+                        else: ss["losses"] += 1
+                        ss["returns"].append(entry.get("actual_return_pct", 0))
+                        ss["weighted_wins"] += w if is_win else 0
+                        ss["weighted_total"] += w
+
             for pattern, stats in pattern_stats.items():
                 total = stats["wins"] + stats["losses"]
                 if total >= 2:
                     win_rate = stats["wins"] / total * 100
                     avg_ret = np.mean(stats["returns"]) if stats["returns"] else 0
+
+                    # Decay-weighted win rate (#3)
+                    decay_wr = (stats["weighted_wins"] / stats["weighted_total"] * 100
+                                if stats["weighted_total"] > 0 else win_rate)
+
+                    # Per-pattern volume breakdown (#5)
+                    vol_info = {}
+                    if stats["vol_conf_total"] >= 2:
+                        vol_info["vol_confirmed_wr"] = round(
+                            stats["vol_conf_wins"] / stats["vol_conf_total"] * 100, 1)
+                        vol_info["vol_confirmed_n"] = stats["vol_conf_total"]
+                    if stats["vol_no_total"] >= 2:
+                        vol_info["vol_unconfirmed_wr"] = round(
+                            stats["vol_no_wins"] / stats["vol_no_total"] * 100, 1)
+                        vol_info["vol_unconfirmed_n"] = stats["vol_no_total"]
+
                     learnings["pattern_adjustments"][pattern] = {
                         "actual_win_rate": win_rate,
+                        "decay_weighted_win_rate": round(decay_wr, 2),
                         "avg_return": round(avg_ret, 2),
                         "total_trades": total,
                         "note": _generate_pattern_note(pattern, win_rate, avg_ret, stats),
+                        "volume_breakdown": vol_info,
                         "updated_at": datetime.now().isoformat(),
                     }
+
+            # --- Regime-segmented adjustments (#2) ---
+            regime_adjustments = {}
+            for rkey, rs in regime_stats.items():
+                total = rs["wins"] + rs["losses"]
+                if total >= 2:
+                    wr = rs["wins"] / total * 100
+                    decay_wr = (rs["weighted_wins"] / rs["weighted_total"] * 100
+                                if rs["weighted_total"] > 0 else wr)
+                    avg_ret = np.mean(rs["returns"]) if rs["returns"] else 0
+                    regime_adjustments[rkey] = {
+                        "win_rate": round(wr, 1),
+                        "decay_weighted_win_rate": round(decay_wr, 2),
+                        "avg_return": round(avg_ret, 2),
+                        "total_trades": total,
+                    }
+            learnings["regime_adjustments"] = regime_adjustments
+
+            # --- Horizon-segmented adjustments: pattern__horizon ---
+            horizon_adjustments = {}
+            for hkey, hs in horizon_stats.items():
+                total = hs["wins"] + hs["losses"]
+                if total >= 2:
+                    wr = hs["wins"] / total * 100
+                    decay_wr = (hs["weighted_wins"] / hs["weighted_total"] * 100
+                                if hs["weighted_total"] > 0 else wr)
+                    avg_ret = np.mean(hs["returns"]) if hs["returns"] else 0
+                    horizon_adjustments[hkey] = {
+                        "win_rate": round(wr, 1),
+                        "decay_weighted_win_rate": round(decay_wr, 2),
+                        "avg_return": round(avg_ret, 2),
+                        "total_trades": total,
+                    }
+            learnings["horizon_adjustments"] = horizon_adjustments
+
+            # --- Triple-key adjustments: pattern__trend__horizon ---
+            triple_adjustments = {}
+            for tkey, ts in triple_stats.items():
+                total = ts["wins"] + ts["losses"]
+                if total >= 2:
+                    wr = ts["wins"] / total * 100
+                    decay_wr = (ts["weighted_wins"] / ts["weighted_total"] * 100
+                                if ts["weighted_total"] > 0 else wr)
+                    avg_ret = np.mean(ts["returns"]) if ts["returns"] else 0
+                    triple_adjustments[tkey] = {
+                        "win_rate": round(wr, 1),
+                        "decay_weighted_win_rate": round(decay_wr, 2),
+                        "avg_return": round(avg_ret, 2),
+                        "total_trades": total,
+                    }
+            learnings["triple_adjustments"] = triple_adjustments
+
+            # --- Sector-segmented adjustments: pattern__sector ---
+            sector_adjustments = {}
+            for skey, ss in sector_stats.items():
+                total = ss["wins"] + ss["losses"]
+                if total >= 2:
+                    wr = ss["wins"] / total * 100
+                    decay_wr = (ss["weighted_wins"] / ss["weighted_total"] * 100
+                                if ss["weighted_total"] > 0 else wr)
+                    avg_ret = np.mean(ss["returns"]) if ss["returns"] else 0
+                    sector_adjustments[skey] = {
+                        "win_rate": round(wr, 1),
+                        "decay_weighted_win_rate": round(decay_wr, 2),
+                        "avg_return": round(avg_ret, 2),
+                        "total_trades": total,
+                    }
+            learnings["sector_adjustments"] = sector_adjustments
+
             rules = []
             trend_aligned_wins = sum(1 for e in feedback if e["outcome"] == "win" and _is_trend_aligned(e))
             trend_aligned_total = sum(1 for e in feedback if _is_trend_aligned(e))
@@ -1017,6 +1730,91 @@ class PaperTrader:
                 if sl_rate > 40:
                     rules.append({"rule": f"Stop-loss hit rate is {sl_rate:.0f}% — consider widening SL or waiting for better confirmation.",
                                   "confidence": min(0.8, len(sl_exits) / 10), "type": "adjust", "context": "stop_loss_tuning"})
+
+            # --- Per-pattern volume rules (#5) ---
+            for pattern, stats in pattern_stats.items():
+                if stats["vol_conf_total"] >= 3 and stats["vol_no_total"] >= 3:
+                    vc_wr = stats["vol_conf_wins"] / stats["vol_conf_total"] * 100
+                    vn_wr = stats["vol_no_wins"] / stats["vol_no_total"] * 100
+                    if vc_wr > vn_wr + 15:
+                        rules.append({
+                            "rule": f"Pattern '{pattern}' with volume: {vc_wr:.0f}% WR vs without: {vn_wr:.0f}%. Volume is critical for this pattern.",
+                            "confidence": min(0.85, stats["vol_conf_total"] / 10),
+                            "type": "prefer", "context": f"volume_per_pattern_{pattern}",
+                        })
+
+            # --- Feedback-based filter penalties (#4) ---
+            # Patterns with proven poor performance get flagged
+            filter_penalties = {}
+            filter_boosts = {}
+            for pattern, stats in pattern_stats.items():
+                total = stats["wins"] + stats["losses"]
+                if total < 5:
+                    continue
+                wr = stats["wins"] / total * 100
+                if wr < 45:
+                    filter_penalties[pattern] = {
+                        "actual_wr": round(wr, 1), "trades": total,
+                        "action": "reject",
+                        "reason": f"Paper trading WR {wr:.0f}% on {total} trades — below 45% threshold",
+                    }
+                elif wr > 70 and total >= 10:
+                    filter_boosts[pattern] = {
+                        "actual_wr": round(wr, 1), "trades": total,
+                        "action": "relax",
+                        "reason": f"Paper trading WR {wr:.0f}% on {total} trades — proven strong performer",
+                    }
+            learnings["filter_penalties"] = filter_penalties
+            learnings["filter_boosts"] = filter_boosts
+
+            # --- Per-horizon filter penalties/boosts ---
+            # Key: "pattern__horizon_label" -> {action, reason, ...}
+            horizon_filter_penalties = {}
+            horizon_filter_boosts = {}
+            for hkey, hs in horizon_stats.items():
+                total = hs["wins"] + hs["losses"]
+                if total < 3:
+                    continue
+                wr = hs["wins"] / total * 100
+                if wr < 40:
+                    horizon_filter_penalties[hkey] = {
+                        "actual_wr": round(wr, 1), "trades": total,
+                        "action": "reject",
+                        "reason": f"Horizon WR {wr:.0f}% on {total} trades",
+                    }
+                elif wr > 70 and total >= 5:
+                    horizon_filter_boosts[hkey] = {
+                        "actual_wr": round(wr, 1), "trades": total,
+                        "action": "relax",
+                        "reason": f"Horizon WR {wr:.0f}% on {total} trades — strong",
+                    }
+            learnings["horizon_filter_penalties"] = horizon_filter_penalties
+            learnings["horizon_filter_boosts"] = horizon_filter_boosts
+
+            # --- Per-sector filter penalties/boosts ---
+            # Key: "pattern__sector" -> {action, reason, ...}
+            sector_filter_penalties = {}
+            sector_filter_boosts = {}
+            for skey, ss in sector_stats.items():
+                total = ss["wins"] + ss["losses"]
+                if total < 3:
+                    continue
+                wr = ss["wins"] / total * 100
+                if wr < 40:
+                    sector_filter_penalties[skey] = {
+                        "actual_wr": round(wr, 1), "trades": total,
+                        "action": "reject",
+                        "reason": f"Sector WR {wr:.0f}% on {total} trades",
+                    }
+                elif wr > 70 and total >= 5:
+                    sector_filter_boosts[skey] = {
+                        "actual_wr": round(wr, 1), "trades": total,
+                        "action": "relax",
+                        "reason": f"Sector WR {wr:.0f}% on {total} trades — strong",
+                    }
+            learnings["sector_filter_penalties"] = sector_filter_penalties
+            learnings["sector_filter_boosts"] = sector_filter_boosts
+
             learnings["rules"] = rules
             learnings["updated_at"] = datetime.now().isoformat()
             _save_json(LEARNING_FILE, learnings)
@@ -1032,12 +1830,16 @@ class PaperTrader:
             if pid in seen_ids:
                 continue
             outcome = "win" if t["status"] in ("WON", "EXPIRED_WIN") else "loss"
+            inst = t.get("instrument", "")
             existing.append({
                 "trade_id": pid,
                 "ticker": t["ticker"],
-                "instrument": t.get("instrument", ""),
+                "instrument": inst,
+                "sector": t.get("sector") or INSTRUMENT_SECTORS.get(inst, "unknown"),
                 "direction": t["direction"],
                 "patterns": t.get("patterns", "").split(","),
+                "horizon_days": t.get("horizon_days"),
+                "horizon_label": t.get("horizon_label", ""),
                 "predicted_win_rate": t.get("predicted_win_rate", 0),
                 "predicted_pf": t.get("predicted_pf", 0),
                 "confidence": t.get("confidence", ""),
@@ -1053,10 +1855,13 @@ class PaperTrader:
 
         if new:
             _save_json(FEEDBACK_FILE, existing)
-            _update_learnings(existing)
             log.info(f"Fed {new} outcomes to RAG")
         else:
             log.info("No new outcomes for RAG")
+
+        # Always regenerate learnings (schema may have changed, decay weights shift daily)
+        if len(existing) >= 3:
+            _update_learnings(existing)
 
 
 # ============================================================
@@ -1069,6 +1874,21 @@ if __name__ == "__main__":
     cmd = sys.argv[1].lower() if len(sys.argv) > 1 else "run"
     if cmd == "scan":
         engine.scan_date(date.today())
+    elif cmd == "scan_preview":
+        engine.scan_preview(date.today())
+    elif cmd == "approve":
+        # approve all or specific indices: approve 0,1,3,5
+        if len(sys.argv) > 2:
+            indices = [int(x) for x in sys.argv[2].split(",") if x.strip().isdigit()]
+            engine.approve_signals(indices)
+        else:
+            engine.approve_signals()  # approve all
+    elif cmd == "discard":
+        if os.path.exists(PENDING_SIGNALS_FILE):
+            os.remove(PENDING_SIGNALS_FILE)
+            log.info("Pending signals discarded")
+        else:
+            log.info("No pending signals to discard")
     elif cmd == "monitor":
         engine.monitor_open_positions()
     elif cmd == "feedback":
@@ -1078,4 +1898,4 @@ if __name__ == "__main__":
     elif cmd == "run":
         engine.run()
     else:
-        print(f"Unknown: {cmd}. Use: run|scan|monitor|feedback|stats")
+        print(f"Unknown: {cmd}. Use: run|scan|scan_preview|approve|discard|monitor|feedback|stats")

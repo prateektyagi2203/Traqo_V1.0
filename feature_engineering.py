@@ -18,6 +18,7 @@ import pandas as pd
 import ta as ta_lib
 from candlestick_knowledge_base import get_reliability_rating, PATTERN_KB
 from pattern_detector import detect_all_patterns, detect_market_regime, add_sr_to_dataframe
+from trading_config import INSTRUMENT_SECTORS
 from ta.trend import EMAIndicator, ADXIndicator, MACD
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands, AverageTrueRange
@@ -234,29 +235,29 @@ def add_outcomes(df, forward_periods=[1, 3, 5, 10, 25]):
         )
 
     # Max favorable excursion (MFE) and Max adverse excursion (MAE)
-    # in the next 5 candles
-    look_ahead = 5
-    mfe_list = []
-    mae_list = []
-    for i in range(len(df)):
-        if i + look_ahead >= len(df):
-            mfe_list.append(np.nan)
-            mae_list.append(np.nan)
-            continue
-        future_highs = df["High"].iloc[i + 1: i + 1 + look_ahead]
-        future_lows = df["Low"].iloc[i + 1: i + 1 + look_ahead]
-        current_close = close.iloc[i]
-        if current_close == 0:
-            mfe_list.append(np.nan)
-            mae_list.append(np.nan)
-            continue
-        mfe = (future_highs.max() - current_close) / current_close * 100
-        mae = (future_lows.min() - current_close) / current_close * 100
-        mfe_list.append(round(mfe, 4))
-        mae_list.append(round(mae, 4))
+    # Computed per-horizon for accurate SL/target calibration
+    for look_ahead in forward_periods:
+        mfe_list = []
+        mae_list = []
+        for i in range(len(df)):
+            if i + look_ahead >= len(df):
+                mfe_list.append(np.nan)
+                mae_list.append(np.nan)
+                continue
+            future_highs = df["High"].iloc[i + 1: i + 1 + look_ahead]
+            future_lows = df["Low"].iloc[i + 1: i + 1 + look_ahead]
+            current_close = close.iloc[i]
+            if current_close == 0:
+                mfe_list.append(np.nan)
+                mae_list.append(np.nan)
+                continue
+            mfe = (future_highs.max() - current_close) / current_close * 100
+            mae = (future_lows.min() - current_close) / current_close * 100
+            mfe_list.append(round(mfe, 4))
+            mae_list.append(round(mae, 4))
 
-    df["mfe_5"] = mfe_list  # Max Favorable Excursion (next 5 candles)
-    df["mae_5"] = mae_list  # Max Adverse Excursion (next 5 candles)
+        df[f"mfe_{look_ahead}"] = mfe_list
+        df[f"mae_{look_ahead}"] = mae_list
 
     return df
 
@@ -300,6 +301,7 @@ def generate_rag_documents(df, instrument_name, timeframe):
             "id": f"{instrument_name}_{timeframe}_{i}",
             "datetime": str(idx),
             "instrument": instrument_name,
+            "sector": INSTRUMENT_SECTORS.get(instrument_name, "unknown"),
             "timeframe": timeframe,
 
             # Pattern
@@ -370,8 +372,12 @@ def generate_rag_documents(df, instrument_name, timeframe):
             doc[ret_key] = round(float(row[ret_key]), 4) if pd.notna(row.get(ret_key)) else None
             doc[dir_key] = row.get(dir_key, None)
 
-        doc["mfe_5"] = round(float(row["mfe_5"]), 4) if pd.notna(row.get("mfe_5")) else None
-        doc["mae_5"] = round(float(row["mae_5"]), 4) if pd.notna(row.get("mae_5")) else None
+        # Per-horizon MFE/MAE
+        for n in [1, 3, 5, 10, 25]:
+            mfe_key = f"mfe_{n}"
+            mae_key = f"mae_{n}"
+            doc[mfe_key] = round(float(row[mfe_key]), 4) if pd.notna(row.get(mfe_key)) else None
+            doc[mae_key] = round(float(row[mae_key]), 4) if pd.notna(row.get(mae_key)) else None
 
         # Text representation for embedding
         doc["text"] = _build_text_repr(doc)
@@ -399,7 +405,7 @@ def _build_text_repr(doc):
 
     parts = [
         f"Pattern: {' | '.join(pattern_parts)}",
-        f"Instrument: {doc['instrument']} | Timeframe: {doc['timeframe']}",
+        f"Instrument: {doc['instrument']} | Sector: {doc.get('sector', 'unknown')} | Timeframe: {doc['timeframe']}",
         f"Date: {doc['datetime']}",
         f"OHLC: O={doc['open']} H={doc['high']} L={doc['low']} C={doc['close']}",
     ]

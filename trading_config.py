@@ -144,6 +144,42 @@ STRUCTURAL_SL_PATTERNS = {
     "mat_hold",            # PF 1.70 → continuation pattern
 }
 
+# ============================================================
+# PER-HORIZON PATTERN WHITELIST
+# ============================================================
+# Some patterns work better at specific holding periods.
+# If a horizon is not listed, falls back to the flat WHITELISTED_PATTERNS.
+HORIZON_PATTERN_WHITELIST = {
+    "BTST_1d": {
+        # Fast reversal patterns that resolve in 1 day
+        "hammer", "bullish_kicker", "belt_hold_bullish",
+        "harami_cross", "homing_pigeon",
+    },
+    "Swing_3d": {
+        # Short swing — classic reversal & continuation
+        "hammer", "three_black_crows", "bullish_kicker",
+        "belt_hold_bullish", "homing_pigeon", "harami_cross",
+        "three_inside_down",
+    },
+    "Swing_5d": WHITELISTED_PATTERNS,  # Primary horizon: use full whitelist
+    "Swing_10d": {
+        # Medium swing — multi-candle patterns that need time
+        "three_black_crows", "rising_three_methods", "bullish_kicker",
+        "belt_hold_bullish", "homing_pigeon", "three_inside_down",
+        "harami_cross", "hammer",
+    },
+    # Swing_25d removed from scope
+}
+
+# Per-horizon allowed tiers (shorter horizons need higher-quality matches)
+HORIZON_ALLOWED_TIERS = {
+    "BTST_1d":   {"tier_1"},                    # BTST: only top tier
+    "Swing_3d":  {"tier_1", "tier_2"},           # Short swing: top 2 tiers
+    "Swing_5d":  {"tier_1", "tier_2"},           # Primary: default
+    "Swing_10d": {"tier_1", "tier_2"},           # Medium swing
+    # Swing_25d removed from scope
+}
+
 
 # ============================================================
 # ITEM 4: TIER / CONFIDENCE FILTERS
@@ -173,6 +209,22 @@ STANDARD_SL_MULTIPLIER = 1.5     # Tier B: default
 SL_FLOOR_PCT = 0.3               # minimum SL (prevents over-tight)
 SL_CAP_PCT = 5.0                 # maximum SL (prevents absurdly wide)
 
+# Per-horizon SL scaling (mirrors paper_trader.py HORIZON_CONFIG)
+# sl_mult_scale: multiplied with the base SL multiplier
+# sl_cap: max SL% for that horizon
+# rr_min: minimum reward-to-risk ratio required
+HORIZON_SL_CONFIG = {
+    1:  {"sl_mult_scale": 0.7,  "sl_cap": 2.5, "rr_min": 1.5},
+    3:  {"sl_mult_scale": 0.8,  "sl_cap": 3.5, "rr_min": 1.8},
+    5:  {"sl_mult_scale": 1.0,  "sl_cap": 5.0, "rr_min": 2.0},
+    10: {"sl_mult_scale": 1.2,  "sl_cap": 5.0, "rr_min": 2.0},
+    # 25d removed from scope
+}
+
+# Horizons disabled in production (PF < 1.0 OOS after costs)
+# Set to empty to enable all horizons.
+DISABLED_HORIZONS = frozenset()  # 25d fully removed from scope — not relevant to RAG analysis
+
 
 # ============================================================
 # TRADING COST MODEL
@@ -180,6 +232,29 @@ SL_CAP_PCT = 5.0                 # maximum SL (prevents absurdly wide)
 # Indian intraday: ~0.05% round-trip
 # Covers brokerage + STT + exchange txn + GST + stamp duty + SEBI turnover
 SLIPPAGE_COMMISSION_PCT = 0.05
+
+
+# ============================================================
+# PRODUCTION FILTERS (R3: unified for backtest & paper_trader)
+# ============================================================
+# These must be used identically in both backtest_walkforward.py and
+# paper_trader.py so that OOS results predict live performance.
+PRODUCTION_FILTERS = {
+    "min_win_rate": 55.0,       # minimum predicted win rate %
+    "min_confidence": "MEDIUM", # minimum confidence level
+    "min_rr_ratio": 1.5,       # minimum reward-to-risk
+    "min_edge_pct": 8.5,       # minimum absolute edge %
+}
+
+# Per-horizon edge thresholds (R4: longer horizons need bigger edge)
+# Replaces the flat 3% neutral zone.
+HORIZON_EDGE_THRESHOLDS = {
+    1:  {"neutral_zone": 2.0, "prod_min_edge": 6.0},   # BTST: fast, small edge OK
+    3:  {"neutral_zone": 2.5, "prod_min_edge": 7.0},
+    5:  {"neutral_zone": 3.0, "prod_min_edge": 8.5},   # Primary horizon (baseline)
+    10: {"neutral_zone": 4.0, "prod_min_edge": 10.0},  # Needs more edge to cover noise
+    25: {"neutral_zone": 5.0, "prod_min_edge": 12.0},  # Highest bar
+}
 
 
 # ============================================================

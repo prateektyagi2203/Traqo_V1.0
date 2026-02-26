@@ -26,18 +26,20 @@ class FastStatPredictor:
     Supports optional leave-one-out via `exclude_id` parameter in predict().
     """
 
-    def __init__(self, docs):
+    def __init__(self, docs, horizon=None, neutral_zone=3.0):
+        self.horizon = horizon or PRIMARY_HORIZON
+        self.neutral_zone = neutral_zone
         self.docs = [d for d in docs
                      if d.get("instrument") not in EXCLUDED_INSTRUMENTS
                      and is_tradeable_instrument(d.get("instrument", ""))
                      and is_tradeable_timeframe(d.get("timeframe", ""))
-                     and d.get(f"fwd_{PRIMARY_HORIZON}_return_pct") is not None
-                     and d.get(f"fwd_{PRIMARY_HORIZON}_direction") is not None]
+                     and d.get(f"fwd_{self.horizon}_return_pct") is not None
+                     and d.get(f"fwd_{self.horizon}_direction") is not None]
 
         # Base rates
         dir_counts = defaultdict(int)
         for d in self.docs:
-            dir_counts[d[f"fwd_{PRIMARY_HORIZON}_direction"]] += 1
+            dir_counts[d[f"fwd_{self.horizon}_direction"]] += 1
         total = sum(dir_counts.values())
         self.base_rates = {k: v / total for k, v in dir_counts.items()}
 
@@ -171,8 +173,8 @@ class FastStatPredictor:
         capped = capped[:TOP_K]
 
         # Aggregate
-        ret_key = f"fwd_{PRIMARY_HORIZON}_return_pct"
-        dir_key = f"fwd_{PRIMARY_HORIZON}_direction"
+        ret_key = f"fwd_{self.horizon}_return_pct"
+        dir_key = f"fwd_{self.horizon}_direction"
 
         returns = []
         dirs = {"bullish": 0, "bearish": 0, "neutral": 0}
@@ -196,7 +198,7 @@ class FastStatPredictor:
         bull_edge = bull_pct - base_bull
         bear_edge = bear_pct - base_bear
 
-        if abs(bull_edge) < 3 and abs(bear_edge) < 3:
+        if abs(bull_edge) < self.neutral_zone and abs(bear_edge) < self.neutral_zone:
             direction = "neutral"
             edge = 0
         elif bull_edge > bear_edge:
@@ -206,11 +208,13 @@ class FastStatPredictor:
             direction = "bearish"
             edge = bear_edge
 
-        # MFE/MAE
-        mfes = [float(self.docs[i]["mfe_5"]) for i in capped
-                if self.docs[i].get("mfe_5") is not None]
-        maes = [float(self.docs[i]["mae_5"]) for i in capped
-                if self.docs[i].get("mae_5") is not None]
+        # MFE/MAE (use per-horizon fields)
+        mfe_key = f"mfe_{self.horizon}"
+        mae_key = f"mae_{self.horizon}"
+        mfes = [float(self.docs[i][mfe_key]) for i in capped
+                if self.docs[i].get(mfe_key) is not None]
+        maes = [float(self.docs[i][mae_key]) for i in capped
+                if self.docs[i].get(mae_key) is not None]
         avg_mfe = float(np.mean(mfes)) if mfes else 0
         avg_mae = float(np.mean(maes)) if maes else 0
 

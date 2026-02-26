@@ -30,12 +30,16 @@ from trading_config import (
     STRUCTURAL_SL_PATTERNS, STRUCTURAL_SL_MULTIPLIER, STANDARD_SL_MULTIPLIER,
     MAX_PER_INSTRUMENT, MIN_MATCHES, TOP_K, PRIMARY_HORIZON,
     ALLOWED_TIMEFRAMES, ALLOWED_INSTRUMENTS, ALLOWED_TIERS,
-    SL_FLOOR_PCT, SL_CAP_PCT,
+    SL_FLOOR_PCT, SL_CAP_PCT, INSTRUMENT_SECTORS,
     is_tradeable_instrument, is_tradeable_timeframe, is_tradeable_pattern,
     is_tradeable_tier,
 )
 
+# Max matches from any single sector (prevents sector concentration)
+MAX_PER_SECTOR = 15
+
 RAG_DOCS_PATH = "rag_documents_v2/all_pattern_documents.json"
+FEEDBACK_LEARNING_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback", "learned_rules.json")
 
 
 class StatisticalPredictor:
@@ -43,6 +47,7 @@ class StatisticalPredictor:
 
     def __init__(self, docs_path=RAG_DOCS_PATH):
         print("  Loading statistical predictor...", flush=True)
+        self._load_feedback()
 
         with open(docs_path, "r") as f:
             raw_docs = json.load(f)
@@ -112,11 +117,222 @@ class StatisticalPredictor:
             first = regime.split("|")[0] if "|" in regime else regime
             self.regime_index[f"_broad_{first}"].add(i)
 
+        # Sector index: sector_name -> set of doc indices
+        self.sector_index = defaultdict(set)
+        for i, d in enumerate(self.docs):
+            sector = d.get("sector") or INSTRUMENT_SECTORS.get(d.get("instrument", ""), "unknown")
+            self.sector_index[sector].add(i)
+
         print(f"  Loaded {len(self.docs)} docs (excluded {len(raw_docs) - len(self.docs)} total)")
+        print(f"  Sectors indexed: {len(self.sector_index)} unique sectors")
         print(f"    - Timeframe filtered: {n_tf_filtered} (allowed: {ALLOWED_TIMEFRAMES})")
         print(f"    - Instrument filtered: {n_inst_filtered} (allowed: {len(ALLOWED_INSTRUMENTS)} instruments)")
         print(f"  Base rates: { {k: f'{v:.1%}' for k, v in self.base_rates.items()} }")
         print(f"  Indexed {len(self.pattern_index)} unique patterns")
+
+    # ----------------------------------------------------------
+    # FEEDBACK LOOP — Paper Trading Learned Rules
+    # ----------------------------------------------------------
+    def _load_feedback(self):
+        """Load pattern adjustments and rules from paper trading feedback."""
+        self.feedback_pattern_adj = {}   # pattern -> {actual_win_rate, decay_weighted_win_rate, ...}
+        self.feedback_rules = []          # [{rule, confidence, type, context}, ...]
+        self.feedback_regime_adj = {}     # pattern__trend -> {win_rate, decay_weighted_win_rate, ...}
+        self.feedback_horizon_adj = {}    # pattern__horizon -> {win_rate, decay_weighted_win_rate, ...}
+        self.feedback_triple_adj = {}     # pattern__trend__horizon -> {...}
+        self.feedback_filter_penalties = {}  # pattern -> {action, reason, ...}
+        self.feedback_filter_boosts = {}    # pattern -> {action, reason, ...}
+        self.feedback_horizon_filter_penalties = {}  # pattern__horizon -> {action, ...}
+        self.feedback_horizon_filter_boosts = {}     # pattern__horizon -> {action, ...}
+        self.feedback_sector_adj = {}      # pattern__sector -> {win_rate, ...}
+        self.feedback_sector_filter_penalties = {}  # pattern__sector -> {action, ...}
+        self.feedback_sector_filter_boosts = {}     # pattern__sector -> {action, ...}
+        self.feedback_loaded_at = None
+
+        if not os.path.exists(FEEDBACK_LEARNING_FILE):
+            return
+        try:
+            with open(FEEDBACK_LEARNING_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.feedback_pattern_adj = data.get("pattern_adjustments", {})
+            self.feedback_rules = data.get("rules", [])
+            self.feedback_regime_adj = data.get("regime_adjustments", {})
+            self.feedback_horizon_adj = data.get("horizon_adjustments", {})
+            self.feedback_triple_adj = data.get("triple_adjustments", {})
+            self.feedback_filter_penalties = data.get("filter_penalties", {})
+            self.feedback_filter_boosts = data.get("filter_boosts", {})
+            self.feedback_horizon_filter_penalties = data.get("horizon_filter_penalties", {})
+            self.feedback_horizon_filter_boosts = data.get("horizon_filter_boosts", {})
+            self.feedback_sector_adj = data.get("sector_adjustments", {})
+            self.feedback_sector_filter_penalties = data.get("sector_filter_penalties", {})
+            self.feedback_sector_filter_boosts = data.get("sector_filter_boosts", {})
+            self.feedback_loaded_at = data.get("updated_at")
+            n_adj = len(self.feedback_pattern_adj)
+            n_rules = len(self.feedback_rules)
+            n_regime = len(self.feedback_regime_adj)
+            n_horizon = len(self.feedback_horizon_adj)
+            n_triple = len(self.feedback_triple_adj)
+            n_sector = len(self.feedback_sector_adj)
+            if n_adj or n_rules or n_regime:
+                print(f"  Feedback loop: {n_adj} pattern adj, {n_regime} regime, "
+                      f"{n_horizon} horizon, {n_triple} triple, {n_sector} sector segments, "
+                      f"{n_rules} rules (updated {self.feedback_loaded_at or 'unknown'})")
+        except Exception as e:
+            print(f"  Feedback loop: failed to load — {e}")
+
+    def reload_feedback(self):
+        """Re-read feedback file (call after new outcomes are fed)."""
+        self._load_feedback()
+
+    def get_horizon_feedback(self, patterns, trend_short, horizon_label):
+        """Look up horizon-specific feedback WR for given patterns.
+
+        Cascade: triple → horizon → regime → pattern (most specific first).
+        Returns (adjusted_wr, source_tag) or (None, None) if no horizon-specific
+        feedback is available (caller should use the default prediction WR).
+        """
+        if not horizon_label:
+            return None, None
+
+        for pat in (patterns if isinstance(patterns, list) else [patterns]):
+            # 1. Triple key: pattern__trend__horizon
+            if trend_short:
+                tkey = f"{pat}__{trend_short}__{horizon_label}"
+                ta = self.feedback_triple_adj.get(tkey)
+                if ta and ta.get("total_trades", 0) >= 3:
+                    wr = ta.get("decay_weighted_win_rate", ta.get("win_rate"))
+                    return wr, f"triple:{tkey}"
+
+            # 2. Horizon key: pattern__horizon
+            hkey = f"{pat}__{horizon_label}"
+            ha = self.feedback_horizon_adj.get(hkey)
+            if ha and ha.get("total_trades", 0) >= 2:
+                wr = ha.get("decay_weighted_win_rate", ha.get("win_rate"))
+                return wr, f"horizon:{hkey}"
+
+        return None, None
+
+    def _apply_feedback(self, result, pattern, trend_short=None, horizon_label=None, sector=None):
+        """Blend paper-trading actual performance into raw statistical prediction.
+
+        Cascade lookup (most specific to least specific):
+          1. pattern__trend__horizon  (triple key)
+          2. pattern__horizon          (horizon-segmented)
+          3. pattern__sector           (sector-segmented)
+          4. pattern__trend            (regime-segmented)
+          5. pattern                   (base pattern)
+
+        - Confidence: scaled boost/penalize based on learned rules (3-5x stronger than v1).
+        - A/B tracking: stores raw_win_rate alongside blended for later analysis.
+        - Returns the modified result dict in-place.
+        """
+        # --- A/B tracking: always record the raw (pre-feedback) values (#8) ---
+        result["raw_win_rate"] = result.get("win_rate", 50)
+        result["raw_confidence_score"] = result.get("confidence_score", 0.5)
+
+        # --- 5-tier cascade lookup for most specific feedback ---
+        triple_key = f"{pattern}__{trend_short}__{horizon_label}" if (trend_short and horizon_label) else None
+        horizon_key = f"{pattern}__{horizon_label}" if horizon_label else None
+        sector_key = f"{pattern}__{sector}" if sector else None
+        regime_key = f"{pattern}__{trend_short}" if trend_short else None
+
+        triple_adj = self.feedback_triple_adj.get(triple_key) if triple_key else None
+        horizon_adj = self.feedback_horizon_adj.get(horizon_key) if horizon_key else None
+        sector_adj = self.feedback_sector_adj.get(sector_key) if sector_key else None
+        regime_adj = self.feedback_regime_adj.get(regime_key) if regime_key else None
+        adj = self.feedback_pattern_adj.get(pattern)
+
+        # Pick the best available feedback source (most specific first)
+        paper_wr = None
+        paper_n = 0
+        feedback_source = None
+
+        if triple_adj and triple_adj.get("total_trades", 0) >= 3:
+            paper_wr = triple_adj.get("decay_weighted_win_rate", triple_adj.get("win_rate", 50))
+            paper_n = triple_adj["total_trades"]
+            feedback_source = f"triple:{triple_key}"
+        elif horizon_adj and horizon_adj.get("total_trades", 0) >= 2:
+            paper_wr = horizon_adj.get("decay_weighted_win_rate", horizon_adj.get("win_rate", 50))
+            paper_n = horizon_adj["total_trades"]
+            feedback_source = f"horizon:{horizon_key}"
+        elif sector_adj and sector_adj.get("total_trades", 0) >= 2:
+            paper_wr = sector_adj.get("decay_weighted_win_rate", sector_adj.get("win_rate", 50))
+            paper_n = sector_adj["total_trades"]
+            feedback_source = f"sector:{sector_key}"
+        elif regime_adj and regime_adj.get("total_trades", 0) >= 3:
+            paper_wr = regime_adj.get("decay_weighted_win_rate", regime_adj.get("win_rate", 50))
+            paper_n = regime_adj["total_trades"]
+            feedback_source = f"regime:{regime_key}"
+        elif adj and adj.get("total_trades", 0) >= 2:
+            paper_wr = adj.get("decay_weighted_win_rate", adj.get("actual_win_rate", 50))
+            paper_n = adj["total_trades"]
+            feedback_source = f"pattern:{pattern}"
+
+        if paper_wr is not None and paper_n >= 2:
+            raw_wr = result.get("win_rate", 50)
+
+            # Weight: paper data gets up to 50% influence, scaling with sample size
+            paper_weight = min(0.50, paper_n / (paper_n + 20))
+            blended_wr = raw_wr * (1 - paper_weight) + paper_wr * paper_weight
+            result["win_rate"] = round(blended_wr, 2)
+            result["feedback_applied"] = True
+            result["feedback_paper_wr"] = round(paper_wr, 1)
+            result["feedback_paper_n"] = paper_n
+            result["feedback_blend_weight"] = round(paper_weight, 2)
+            result["feedback_source"] = feedback_source
+
+        # --- Apply learned rules to confidence (scaled 3-5x stronger) (#7) ---
+        conf_boost = 0.0
+        for rule in self.feedback_rules:
+            ctx = rule.get("context", "")
+            rule_conf = rule.get("confidence", 0.5)
+            # Scale factor based on sample size backing the rule
+            scale = min(3.0, 1.0 + rule_conf * 2.5)  # 1.0 to 3.0x
+
+            if ctx == "trend_alignment" and trend_short:
+                direction = result.get("predicted_direction", "")
+                is_aligned = (direction == "bullish" and trend_short == "bullish") or \
+                             (direction == "bearish" and trend_short == "bearish")
+                if is_aligned:
+                    conf_boost += 0.05 * scale * rule_conf  # up to +0.135
+                else:
+                    conf_boost -= 0.04 * scale * rule_conf  # up to -0.108
+
+            elif ctx == "volume_confirmation":
+                conf_boost += 0.03 * scale * rule_conf  # up to +0.064
+
+            elif ctx.startswith("volume_per_pattern_"):
+                # Per-pattern volume rules — stronger signal
+                rule_pattern = ctx.replace("volume_per_pattern_", "")
+                if rule_pattern == pattern:
+                    conf_boost += 0.04 * scale * rule_conf  # targeted boost
+
+            elif ctx == "stop_loss_tuning":
+                conf_boost -= 0.04 * scale * rule_conf  # up to -0.108
+
+        # --- Volume breakdown confidence adjustment (#5) ---
+        if adj and adj.get("volume_breakdown"):
+            vb = adj["volume_breakdown"]
+            vc_wr = vb.get("vol_confirmed_wr")
+            vn_wr = vb.get("vol_unconfirmed_wr")
+            if vc_wr is not None and vn_wr is not None:
+                # If volume-confirmed WR is significantly better, boost confidence
+                vol_edge = (vc_wr - vn_wr) / 100  # e.g., 0.20 for 20% difference
+                if vol_edge > 0.1:
+                    conf_boost += vol_edge * 0.15  # up to +0.03 for 20% edge
+
+        if conf_boost != 0:
+            old_conf = result.get("confidence_score", 0.5)
+            new_conf = max(0.0, min(1.0, old_conf + conf_boost))
+            result["confidence_score"] = round(new_conf, 4)
+            result["confidence_level"] = (
+                "HIGH" if new_conf > 0.55 else
+                "MEDIUM" if new_conf > 0.35 else
+                "LOW"
+            )
+            result["feedback_conf_boost"] = round(conf_boost, 4)
+
+        return result
 
     def _cap_per_instrument(self, doc_indices, query_instrument=None):
         """Cap matches from any single instrument to MAX_PER_INSTRUMENT.
@@ -140,6 +356,43 @@ class StatisticalPredictor:
 
         return capped
 
+    def _cap_per_sector(self, doc_indices, query_sector=None):
+        """Cap matches from any single sector to MAX_PER_SECTOR.
+        Prevents sector concentration in match pool."""
+        if not query_sector or query_sector == "unknown":
+            return doc_indices  # no sector info, skip capping
+
+        sector_buckets = defaultdict(list)
+        for idx in doc_indices:
+            d = self.docs[idx]
+            sec = d.get("sector") or INSTRUMENT_SECTORS.get(d.get("instrument", ""), "unknown")
+            sector_buckets[sec].append(idx)
+
+        capped = []
+        for sec, indices in sector_buckets.items():
+            limit = MAX_PER_SECTOR
+            if len(indices) > limit:
+                step = len(indices) / limit
+                indices = [indices[int(i * step)] for i in range(limit)]
+            capped.extend(indices)
+        return capped
+
+    def _sort_sector_first(self, doc_indices, query_sector=None):
+        """Sort matches so same-sector docs come first (sector-aware retrieval weighting)."""
+        if not query_sector or query_sector == "unknown":
+            return doc_indices
+
+        same = []
+        other = []
+        for idx in doc_indices:
+            d = self.docs[idx]
+            sec = d.get("sector") or INSTRUMENT_SECTORS.get(d.get("instrument", ""), "unknown")
+            if sec == query_sector:
+                same.append(idx)
+            else:
+                other.append(idx)
+        return same + other
+
     def _retrieve_matches(self, pattern, timeframe=None, trend_short=None,
                           rsi_zone=None, price_vs_vwap=None,
                           market_regime=None, instrument=None):
@@ -149,7 +402,11 @@ class StatisticalPredictor:
         Tier 2: Relax RSI zone (keep pattern + timeframe + trend)
         Tier 3: Relax trend (keep pattern + timeframe)
         Tier 4: Pattern only
+
+        Same-sector matches are prioritized (sorted first) for better relevance.
         """
+        # Resolve query sector for sector-aware retrieval
+        query_sector = INSTRUMENT_SECTORS.get(instrument, "unknown") if instrument else None
 
         # Start with pattern matches
         pattern_matches = set(self.pattern_index.get(pattern, []))
@@ -169,7 +426,9 @@ class StatisticalPredictor:
 
         if len(tier_1) >= MIN_MATCHES:
             capped = self._cap_per_instrument(list(tier_1), instrument)
+            capped = self._cap_per_sector(capped, query_sector)
             if len(capped) >= MIN_MATCHES:
+                capped = self._sort_sector_first(capped, query_sector)
                 return capped[:TOP_K * 3], "tier_1_exact"  # return more, will sort later
 
         # Tier 2: relax VWAP and RSI
@@ -181,7 +440,9 @@ class StatisticalPredictor:
 
         if len(tier_2) >= MIN_MATCHES:
             capped = self._cap_per_instrument(list(tier_2), instrument)
+            capped = self._cap_per_sector(capped, query_sector)
             if len(capped) >= MIN_MATCHES:
+                capped = self._sort_sector_first(capped, query_sector)
                 return capped[:TOP_K * 3], "tier_2_relax_rsi_vwap"
 
         # Tier 3: relax trend too
@@ -191,12 +452,16 @@ class StatisticalPredictor:
 
         if len(tier_3) >= MIN_MATCHES:
             capped = self._cap_per_instrument(list(tier_3), instrument)
+            capped = self._cap_per_sector(capped, query_sector)
             if len(capped) >= MIN_MATCHES:
+                capped = self._sort_sector_first(capped, query_sector)
                 return capped[:TOP_K * 3], "tier_3_relax_trend"
 
         # Tier 4: pattern only
         capped = self._cap_per_instrument(list(pattern_matches), instrument)
+        capped = self._cap_per_sector(capped, query_sector)
         if len(capped) >= MIN_MATCHES:
+            capped = self._sort_sector_first(capped, query_sector)
             return capped[:TOP_K * 3], "tier_4_pattern_only"
 
         return list(pattern_matches)[:TOP_K * 3], "insufficient"
@@ -321,8 +586,8 @@ class StatisticalPredictor:
             if ret is None:
                 continue
             ret = float(ret)
-            mae = float(m.get("mae_5", 0) or 0)
-            mfe = float(m.get("mfe_5", 0) or 0)
+            mae = float(m.get(f"mae_{horizon}", m.get("mae_5", 0)) or 0)
+            mfe = float(m.get(f"mfe_{horizon}", m.get("mfe_5", 0)) or 0)
             atr = float(m.get("atr_14", 0) or 0)
             close = float(m.get("close", 1) or 1)
 
@@ -366,9 +631,13 @@ class StatisticalPredictor:
         result["sl_profit_factor"] = round(sl_gross_wins / sl_gross_losses, 3) if sl_gross_losses > 0 else 0
         result["sl_triggers_pct"] = round(n_sl_triggered / len(trade_returns_sl) * 100, 1) if trade_returns_sl else 0
 
-        # --- MFE / MAE ---
-        mfes = [float(m["mfe_5"]) for m in matches if m.get("mfe_5") is not None]
-        maes = [float(m["mae_5"]) for m in matches if m.get("mae_5") is not None]
+        # --- MFE / MAE (horizon-specific with fallback to 5-candle) ---
+        mfe_key = f"mfe_{horizon}"
+        mae_key = f"mae_{horizon}"
+        mfes = [float(m.get(mfe_key, m.get("mfe_5", 0)) or 0) for m in matches
+                if m.get(mfe_key) is not None or m.get("mfe_5") is not None]
+        maes = [float(m.get(mae_key, m.get("mae_5", 0)) or 0) for m in matches
+                if m.get(mae_key) is not None or m.get("mae_5") is not None]
         result["avg_mfe"] = round(float(np.mean(mfes)), 4) if mfes else 0
         result["avg_mae"] = round(float(np.mean(maes)), 4) if maes else 0
         result["rr_ratio"] = round(abs(result["avg_mfe"] / result["avg_mae"]), 2) \
@@ -393,6 +662,8 @@ class StatisticalPredictor:
 
         result["confidence_score"] = round(confidence, 4)
         result["confidence_level"] = conf_level
+
+        # --- Apply paper-trading feedback adjustments ---\n        # Map numeric horizon to label for horizon-aware feedback\n        _horizon_labels = {1: \"BTST_1d\", 3: \"Swing_3d\", 5: \"Swing_5d\", 10: \"Swing_10d\"}\n        h_label = _horizon_labels.get(horizon)\n        query_sector = INSTRUMENT_SECTORS.get(instrument, None) if instrument else None\n        self._apply_feedback(result, pattern, trend_short=trend_short, horizon_label=h_label, sector=query_sector)
 
         # --- Instrument breakdown ---
         inst_counts = defaultdict(int)

@@ -230,6 +230,40 @@ class RiskManager:
             return False
         return True
 
+    def check_horizon_position_limit(self, horizon_days: int,
+                                     open_positions: List[Dict],
+                                     max_concurrent: int = None) -> bool:
+        """Check if adding a position at this horizon would exceed weighted limits.
+
+        Longer-horizon trades consume more 'slot weight' because capital is
+        locked longer.  Weight = horizon_days / 5 (normalised to primary).
+
+        Args:
+            horizon_days: Holding period (1/3/5/10/25).
+            open_positions: Currently open position dicts with optional
+                            'horizon_days' key.
+            max_concurrent: Override for MAX_CONCURRENT_POSITIONS (default from config).
+
+        Returns:
+            True if the trade is ALLOWED.
+        """
+        from trading_config import MAX_CONCURRENT_POSITIONS
+        cap = max_concurrent or MAX_CONCURRENT_POSITIONS
+
+        # Weighted slot usage of existing positions
+        total_weight = sum(
+            pos.get("horizon_days", 5) / 5.0 for pos in open_positions
+        )
+        # Weight of the proposed trade
+        new_weight = horizon_days / 5.0
+
+        if total_weight + new_weight > cap:
+            print(f"  [RISK] Horizon-weighted position limit: "
+                  f"current weight {total_weight:.1f} + new {new_weight:.1f} "
+                  f"> cap {cap}. Rejecting.")
+            return False
+        return True
+
     def _trigger_cooldown(self, reason: str):
         """Activate cooldown period."""
         self.cooldown_until = datetime.now() + timedelta(minutes=COOLDOWN_AFTER_KILL_MINUTES)
@@ -275,7 +309,8 @@ class RiskManager:
 
     def record_trade(self, pnl: float, instrument: str = "",
                      direction: str = "", pattern: str = "",
-                     sl_pct: float = 0, position_pct: float = 0):
+                     sl_pct: float = 0, position_pct: float = 0,
+                     horizon_days: int = 5):
         """Record a completed trade and check all circuit breakers.
         
         Args:
@@ -285,6 +320,7 @@ class RiskManager:
             pattern: Pattern name
             sl_pct: Stop loss percentage used
             position_pct: Position size as % of capital
+            horizon_days: Holding period in days (1/3/5/10/25)
         
         Returns:
             Dict with updated status.
@@ -299,6 +335,7 @@ class RiskManager:
             "pattern": pattern,
             "sl_pct": sl_pct,
             "position_pct": position_pct,
+            "horizon_days": horizon_days,
         }
         
         self.trades_today.append(trade)

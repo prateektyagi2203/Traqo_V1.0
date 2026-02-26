@@ -1088,6 +1088,22 @@ def render_analyze(params=None):
 
     # Forward Returns (collapsible)
     horizons = r["prediction"].get("horizons", {})
+
+    # Determine best horizon for the predicted direction
+    best_hz_label = ""
+    best_hz_edge = 0
+    for hk, hd in horizons.items():
+        if direction == "BULLISH":
+            edge_val = hd.get("bullish_edge", 0)
+        else:
+            edge_val = hd.get("bearish_edge", 0)
+        if edge_val > best_hz_edge:
+            best_hz_edge = edge_val
+            best_hz_label = hk
+    best_hz_badge = ""
+    if best_hz_label and best_hz_edge > 0:
+        best_hz_badge = f' &nbsp; {badge(f"Best: {best_hz_label} ({best_hz_edge:+.1f}%)", "info")}'
+
     hz_rows = ""
     for hk, hd in horizons.items():
         dir_badge = badge(hd["direction"], "bullish" if hd["direction"] == "BULLISH" else "bearish" if hd["direction"] == "BEARISH" else "default")
@@ -1103,7 +1119,7 @@ def render_analyze(params=None):
     fwd_returns = f'''<div class="glass rounded-xl overflow-hidden mb-6">
       <button onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('span').textContent = this.nextElementSibling.classList.contains('hidden') ? 'Show' : 'Hide'"
               class="w-full px-5 py-3 bg-gray-50 border-b border-gray-200 text-left text-sm font-semibold text-gray-700 hover:bg-gray-100 transition flex items-center justify-between">
-        Historical Forward Returns <span class="text-blue-500 text-xs">Show</span>
+        Historical Forward Returns{best_hz_badge} <span class="text-blue-500 text-xs">Show</span>
       </button>
       <div class="hidden overflow-x-auto scrollbar-thin">
         <table class="w-full text-sm"><thead><tr class="border-b border-gray-200">

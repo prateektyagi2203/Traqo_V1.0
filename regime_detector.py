@@ -35,6 +35,29 @@ from trading_config import (
     REGIME_POSITION_SCALE,
 )
 
+# Per-horizon regime scaling overrides.
+# Shorter horizons are less sensitive to bear regimes (mean-reversion works).
+# Longer horizons are MORE sensitive (trend matters more).
+HORIZON_REGIME_SCALE = {
+    "BTST_1d": {
+        "bull_low_vol": 1.0, "bull_high_vol": 0.85,
+        "bear_low_vol": 0.7, "bear_high_vol": 0.5, "extreme": 0.0,
+    },
+    "Swing_3d": {
+        "bull_low_vol": 1.0, "bull_high_vol": 0.75,
+        "bear_low_vol": 0.6, "bear_high_vol": 0.4, "extreme": 0.0,
+    },
+    "Swing_5d": REGIME_POSITION_SCALE,  # primary horizon → default
+    "Swing_10d": {
+        "bull_low_vol": 1.0, "bull_high_vol": 0.6,
+        "bear_low_vol": 0.4, "bear_high_vol": 0.2, "extreme": 0.0,
+    },
+    "Swing_25d": {
+        "bull_low_vol": 1.0, "bull_high_vol": 0.5,
+        "bear_low_vol": 0.3, "bear_high_vol": 0.1, "extreme": 0.0,
+    },
+}
+
 
 class RegimeDetector:
     """Detect market regime from Nifty 50 + VIX data."""
@@ -180,6 +203,23 @@ class RegimeDetector:
         result["scale"] = REGIME_POSITION_SCALE.get(label, 1.0)
 
         return result
+
+    def get_horizon_scale(self, horizon_label: str = None,
+                          as_of_date: str = None) -> float:
+        """Return regime-adjusted position scale for a specific horizon.
+
+        Args:
+            horizon_label: e.g. "BTST_1d", "Swing_5d". None → default scale.
+            as_of_date: Optional date string.
+
+        Returns:
+            Float scale (0.0 – 1.0).
+        """
+        regime = self.detect(as_of_date=as_of_date)
+        label = regime["label"]
+        if horizon_label and horizon_label in HORIZON_REGIME_SCALE:
+            return HORIZON_REGIME_SCALE[horizon_label].get(label, regime["scale"])
+        return regime["scale"]
 
     def detect_for_date(self, date_str: str) -> Dict:
         """Convenience wrapper to detect regime for a specific historical date."""

@@ -27,6 +27,7 @@ from trading_config import (
     SL_FLOOR_PCT, SL_CAP_PCT, SLIPPAGE_COMMISSION_PCT,
     MIN_MATCHES, TOP_K, MAX_PER_INSTRUMENT,
     ALLOWED_TIMEFRAMES, ALLOWED_INSTRUMENTS, ALLOWED_TIERS,
+    INSTRUMENT_SECTORS,
     is_tradeable_instrument, is_tradeable_timeframe, is_tradeable_pattern,
     is_tradeable_tier,
 )
@@ -228,7 +229,11 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--stat-only", action="store_true",
                         help="Skip the slow RAG engine, only test statistical predictor")
+    parser.add_argument("--horizon", type=int, default=None,
+                        help="Override prediction horizon (1/3/5/10/25). Default: PRIMARY_HORIZON")
     args = parser.parse_args()
+
+    h = args.horizon or PRIMARY_HORIZON
 
     print("=" * 74)
     print("  A/B BACKTEST: Statistical Predictor")
@@ -241,8 +246,8 @@ def main():
 
     # Filter eligible — apply production filters
     eligible = [d for d in all_docs
-                if d.get(f"fwd_{PRIMARY_HORIZON}_return_pct") is not None
-                and d.get(f"fwd_{PRIMARY_HORIZON}_direction") is not None
+                if d.get(f"fwd_{h}_return_pct") is not None
+                and d.get(f"fwd_{h}_direction") is not None
                 and d.get("instrument") not in EXCLUDED_INSTRUMENTS
                 and is_tradeable_instrument(d.get("instrument", ""))
                 and is_tradeable_timeframe(d.get("timeframe", ""))]
@@ -272,8 +277,8 @@ def main():
         tradeable_patterns = doc_patterns - EXCLUDED_PATTERNS
         if not tradeable_patterns:
             # All patterns are excluded — treat as neutral (no trade)
-            actual_dir = doc[f"fwd_{PRIMARY_HORIZON}_direction"]
-            actual_ret = float(doc[f"fwd_{PRIMARY_HORIZON}_return_pct"])
+            actual_dir = doc[f"fwd_{h}_direction"]
+            actual_ret = float(doc[f"fwd_{h}_return_pct"])
             stat_results.append({
                 "doc_id": doc["id"],
                 "instrument": doc.get("instrument", "?"),
@@ -293,15 +298,15 @@ def main():
                 "actual_return_sl_net": actual_ret,  # no cost for neutral
                 "sl_triggered": False,
                 "sl_pct": 0,
-                "mae_5": float(doc.get("mae_5", 0) or 0),
-                "mfe_5": float(doc.get("mfe_5", 0) or 0),
+                "mae_5": float(doc.get(f"mae_{h}", doc.get("mae_5", 0)) or 0),
+                "mfe_5": float(doc.get(f"mfe_{h}", doc.get("mfe_5", 0)) or 0),
             })
             continue
 
         pred = sp.predict(doc, exclude_id=doc["id"])
 
-        actual_dir = doc[f"fwd_{PRIMARY_HORIZON}_direction"]
-        actual_ret = float(doc[f"fwd_{PRIMARY_HORIZON}_return_pct"])
+        actual_dir = doc[f"fwd_{h}_direction"]
+        actual_ret = float(doc[f"fwd_{h}_return_pct"])
 
         if pred is None:
             # No prediction = neutral
@@ -330,8 +335,8 @@ def main():
             continue
 
         # --- Stop-loss simulation (tiered) ---
-        mae_5 = float(doc.get("mae_5", 0) or 0)
-        mfe_5 = float(doc.get("mfe_5", 0) or 0)
+        mae_5 = float(doc.get(f"mae_{h}", doc.get("mae_5", 0)) or 0)
+        mfe_5 = float(doc.get(f"mfe_{h}", doc.get("mfe_5", 0)) or 0)
         atr_14 = float(doc.get("atr_14", 0) or 0)
         close_price = float(doc.get("close", 1) or 1)
 
@@ -416,6 +421,12 @@ def main():
     breakdown(stat_results, "price_vs_vwap", "BY PRICE vs VWAP")
     breakdown(stat_results, "tier", "BY MATCH TIER")
 
+    # By sector
+    for r in stat_results:
+        inst = r.get("instrument", "").lower()
+        r["_sector"] = INSTRUMENT_SECTORS.get(inst, "other")
+    breakdown(stat_results, "_sector", "BY SECTOR")
+
     # Volume confirmed
     breakdown(stat_results, "volume_confirmed", "BY VOLUME CONFIRMED")
 
@@ -496,6 +507,7 @@ def main():
     for r in stat_results:
         r.pop("_pc_bucket", None)
         r.pop("_edge_bucket", None)
+        r.pop("_sector", None)
     with open(out_path, "w") as f:
         json.dump(stat_results, f, indent=2)
     print(f"\n  Results saved to {out_path}")
