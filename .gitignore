@@ -29,11 +29,13 @@ archive/
 
 # --- Runtime / user-specific ---
 paper_trades/
-feedback/feedback_log.json
 feedback/trades.json
 feedback/daily_reports/
 models/
 paper_trader_stderr.txt
+
+# NOTE: feedback/learned_rules.json and feedback/feedback_log.json ARE committed
+# These are essential for RAG portability across machines
 
 # --- Session notes ---
 SESSION_STATE_*.md
