@@ -29,7 +29,9 @@ archive/
 
 # --- Runtime / user-specific ---
 paper_trades/
-feedback/
+feedback/feedback_log.json
+feedback/trades.json
+feedback/daily_reports/
 models/
 paper_trader_stderr.txt
 
