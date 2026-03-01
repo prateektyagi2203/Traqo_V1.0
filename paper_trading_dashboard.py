@@ -471,8 +471,10 @@ def page_shell(title, active_tab, body_html):
         ("signals", "Today's Signals", "M13 10V3L4 14h7v7l9-11h-7z"),
         ("positions", "Open Positions", "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"),
         ("history", "Trade History", "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"),
+        ("market", "Market Indices", "M2 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H3a1 1 0 01-1-1V5zM12 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM2 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H3a1 1 0 01-1-1v-4zM12 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"),
         ("performance", "Performance", "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"),
         ("engine", "Engine Control", "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"),
+        ("feedback", "Feedback Loop", "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"),
     ]
 
     nav_items = ""
@@ -647,8 +649,8 @@ def render_dashboard():
             for c in all_caps
         )
         sector_buttons = ''.join(
-            f'<button onclick="filterDashStocks(\'sector\', \'{_e(s)}\')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-group="sector" data-value="{_e(s)}">{_e(s)}</button>'
-            for s in all_sectors
+            f'<button onclick="filterDashStocks(\'sector\', \'{_e(sector)}\')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-group="sector" data-value="{_e(sector)}">{_e(sector)}</button>'
+            for sector in all_sectors
         )
 
         stock_chips = ""
@@ -1430,6 +1432,572 @@ def render_performance():
     return page_shell("Performance", "performance", body)
 
 
+def _render_index_card(label, ticker, size="normal"):
+    """Render a single index card. size='normal' for broad indices, 'compact' for sector."""
+    try:
+        data = yf.download(ticker, period="5d", progress=False, interval="1d")
+
+        if data.empty or len(data) < 2:
+            return f'''
+            <div class="glass rounded-xl p-{'6' if size == 'normal' else '4'}">
+              <div class="text-sm font-medium text-gray-500 uppercase tracking-wide">{_e(label)}</div>
+              <div class="mt-2 text-gray-400 text-xs">No data available</div>
+            </div>'''
+
+        close_col = data["Close"]
+        # Flatten MultiIndex columns from yfinance if present
+        if hasattr(close_col, 'columns'):
+            close_col = close_col.iloc[:, 0]
+        prev_close = float(close_col.iloc[-2])
+        current = float(close_col.iloc[-1])
+        pct_change = ((current - prev_close) / prev_close) * 100
+
+        if pct_change >= 0:
+            color_class = "text-emerald-600"
+            badge_cls = "bg-emerald-50 text-emerald-700 border-emerald-200"
+            arrow = "&#9650;"  # ▲
+        else:
+            color_class = "text-red-600"
+            badge_cls = "bg-red-50 text-red-700 border-red-200"
+            arrow = "&#9660;"  # ▼
+
+        if size == "normal":
+            return f'''
+            <div class="glass rounded-xl p-6">
+              <div class="text-sm font-medium text-gray-500 uppercase tracking-wide">{_e(label)}</div>
+              <div class="mt-4 flex items-end gap-4">
+                <div>
+                  <div class="text-3xl font-bold text-gray-800">{current:,.2f}</div>
+                  <div class="text-xs text-gray-400 mt-1">Current Value</div>
+                </div>
+                <div class="ml-auto text-right">
+                  <div class="{color_class} text-2xl font-bold flex items-center gap-1 justify-end">
+                    {arrow} {abs(pct_change):.2f}%
+                  </div>
+                  <div class="text-xs text-gray-400 mt-1">Today's Change</div>
+                </div>
+              </div>
+              <div class="mt-4 pt-4 border-t border-gray-100">
+                <div class="text-xs text-gray-500">Prev Close: <span class="font-medium text-gray-700">{prev_close:,.2f}</span></div>
+              </div>
+            </div>'''
+        else:
+            # Compact card for sector indices
+            return f'''
+            <div class="glass rounded-xl p-4 flex flex-col gap-2">
+              <div class="flex items-center justify-between">
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide">{_e(label)}</div>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold border {badge_cls}">
+                  {arrow} {abs(pct_change):.2f}%
+                </span>
+              </div>
+              <div class="flex items-end justify-between">
+                <div class="text-xl font-bold text-gray-800">{current:,.2f}</div>
+                <div class="text-[10px] text-gray-400">Prev: {prev_close:,.2f}</div>
+              </div>
+            </div>'''
+
+    except Exception as e:
+        return f'''
+        <div class="glass rounded-xl p-{'6' if size == 'normal' else '4'}">
+          <div class="text-sm font-medium text-gray-500 uppercase tracking-wide">{_e(label)}</div>
+          <div class="mt-2 text-red-600 text-xs">Error: {_e(str(e)[:60])}</div>
+        </div>'''
+
+
+def render_market_indices():
+    """Render market indices dashboard showing broad-market and sector proxy indices."""
+    try:
+        if not _HAS_YF:
+            return page_shell("Market Indices", "market",
+                '''<div class="flex flex-col items-center justify-center py-16 text-center">
+                  <p class="text-lg font-medium text-gray-600">yfinance module not available</p>
+                  <p class="mt-1 text-sm text-gray-400">Please install yfinance to view market data</p>
+                </div>''')
+
+        # ---- Section 1: Broad Market Indices ----
+        broad_indices = [
+            ("NIFTY 50",           "^NSEI"),
+            ("NIFTY Next 50",      "^NSMIDCP"),
+            ("NIFTY Bank",         "^NSEBANK"),
+        ]
+
+        broad_cards = ""
+        for label, ticker in broad_indices:
+            broad_cards += _render_index_card(label, ticker, size="normal")
+
+        # ---- Section 2: Sector Proxy Indices (from position_risk_monitor) ----
+        sector_indices = [
+            ("NIFTY Bank",    "^NSEBANK",    "Banking &amp; Finance"),
+            ("NIFTY IT",      "^CNXIT",      "Information Technology"),
+            ("NIFTY Auto",    "^CNXAUTO",    "Automobile"),
+            ("NIFTY Pharma",  "^CNXPHARMA",  "Pharmaceuticals"),
+            ("NIFTY Metal",   "^CNXMETAL",   "Metals &amp; Mining"),
+            ("NIFTY FMCG",    "^CNXFMCG",    "Fast-Moving Consumer Goods"),
+            ("NIFTY Energy",  "^CNXENERGY",  "Energy &amp; Oil/Gas"),
+            ("NIFTY Realty",  "^CNXREALTY",   "Real Estate"),
+            ("NIFTY Infra",   "^CNXINFRA",   "Infrastructure"),
+        ]
+
+        sector_cards = ""
+        for label, ticker, _desc in sector_indices:
+            sector_cards += _render_index_card(label, ticker, size="compact")
+
+        # ---- Section 3: Sector–Index mapping reference ----
+        mapping_rows = ""
+        sector_map_display = [
+            ("Banking",        "^NSEBANK",   "NIFTY Bank"),
+            ("Finance",        "^NSEBANK",   "NIFTY Bank"),
+            ("IT",             "^CNXIT",     "NIFTY IT"),
+            ("Auto",           "^CNXAUTO",   "NIFTY Auto"),
+            ("Pharma",         "^CNXPHARMA", "NIFTY Pharma"),
+            ("Metals",         "^CNXMETAL",  "NIFTY Metal"),
+            ("FMCG",           "^CNXFMCG",   "NIFTY FMCG"),
+            ("Energy",         "^CNXENERGY", "NIFTY Energy"),
+            ("Realty",         "^CNXREALTY",  "NIFTY Realty"),
+            ("Infra",          "^CNXINFRA",  "NIFTY Infra"),
+            ("Conglomerate",   "^NSEI",      "NIFTY 50 (fallback)"),
+            ("Cement",         "^NSEI",      "NIFTY 50 (fallback)"),
+            ("Telecom",        "^NSEI",      "NIFTY 50 (fallback)"),
+            ("Media",          "^NSEI",      "NIFTY 50 (fallback)"),
+            ("Chemicals",      "^NSEI",      "NIFTY 50 (fallback)"),
+            ("Consumer",       "^NSEI",      "NIFTY 50 (fallback)"),
+            ("Industrial",     "^NSEI",      "NIFTY 50 (fallback)"),
+            ("Logistics",      "^NSEI",      "NIFTY 50 (fallback)"),
+        ]
+        for sector, ticker, idx_name in sector_map_display:
+            fallback = "fallback" in idx_name
+            tag_cls = "bg-gray-100 text-gray-500" if fallback else "bg-blue-50 text-blue-700"
+            mapping_rows += f'''
+              <tr class="border-b border-gray-50 hover:bg-gray-50/50">
+                <td class="px-4 py-2 text-sm font-medium text-gray-700">{sector}</td>
+                <td class="px-4 py-2 font-mono text-xs text-gray-500">{ticker}</td>
+                <td class="px-4 py-2 text-sm">
+                  <span class="inline-block px-2 py-0.5 rounded text-xs font-medium {tag_cls}">{idx_name}</span>
+                </td>
+              </tr>'''
+
+        body = f'''
+        <h2 class="text-2xl font-bold text-gray-800 mb-6">Market Indices</h2>
+
+        <!-- Broad Market -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {broad_cards}
+        </div>
+
+        <!-- Sector Indices -->
+        <div class="mt-10">
+          <h3 class="text-lg font-semibold text-gray-800 mb-1">Sector Indices</h3>
+          <p class="text-xs text-gray-400 mb-4">Proxy tickers used by Position Risk Monitor for sector momentum checks</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {sector_cards}
+          </div>
+        </div>
+
+        <!-- Sector → Index Mapping -->
+        <div class="mt-10 glass rounded-xl p-6">
+          <h3 class="text-lg font-semibold text-gray-800 mb-4">Sector &rarr; Proxy Index Mapping</h3>
+          <p class="text-xs text-gray-400 mb-3">Used by <span class="font-mono">position_risk_monitor.py</span> to calculate sector momentum penalties. Sectors without a dedicated index fall back to NIFTY 50.</p>
+          <div class="overflow-x-auto">
+            <table class="min-w-full text-left">
+              <thead>
+                <tr class="border-b border-gray-200">
+                  <th class="px-4 py-2 text-xs font-semibold text-gray-500 uppercase">Sector</th>
+                  <th class="px-4 py-2 text-xs font-semibold text-gray-500 uppercase">Ticker</th>
+                  <th class="px-4 py-2 text-xs font-semibold text-gray-500 uppercase">Index Name</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mapping_rows}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Info Footer -->
+        <div class="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
+          <p class="text-xs text-blue-800">
+            Last updated at market close. Data sourced from YFinance.
+            Sector indices are used by the Tier-1 Position Risk Monitor to detect regime shifts and sector momentum divergence.
+          </p>
+        </div>'''
+
+        return page_shell("Market Indices", "market", body)
+
+    except Exception as e:
+        body = f'''
+        <div class="flex flex-col items-center justify-center py-16 text-center">
+          <p class="text-lg font-medium text-red-600">Error loading market indices</p>
+          <p class="mt-2 text-sm text-gray-500 font-mono">{_e(str(e))}</p>
+        </div>'''
+        return page_shell("Market Indices", "market", body)
+
+
+# ============================================================
+# FEEDBACK LOOP PAGE
+# ============================================================
+FEEDBACK_FILE = os.path.join("feedback", "feedback_log.json")
+LEARNING_FILE = os.path.join("feedback", "learned_rules.json")
+
+
+def _load_feedback_log():
+    """Load feedback log entries."""
+    try:
+        with open(FEEDBACK_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _load_learned_rules():
+    """Load learned rules / adjustments."""
+    try:
+        with open(LEARNING_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _feedback_csv_bytes():
+    """Generate CSV bytes from feedback log for download."""
+    entries = _load_feedback_log()
+    if not entries:
+        return b"No feedback data available"
+    # Column order
+    cols = [
+        "trade_id", "ticker", "sector", "direction", "patterns", "horizon_label",
+        "horizon_days", "predicted_win_rate", "predicted_pf", "confidence",
+        "outcome", "actual_return_pct", "exit_reason", "notes", "timestamp", "source",
+    ]
+    indicator_cols = ["ema_9", "ema_21", "ema_50", "rsi_14", "atr_14", "vol_ratio",
+                      "price_vs_vwap", "trend_short", "rsi_zone"]
+    import io, csv
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(cols + indicator_cols)
+    for e in entries:
+        row = []
+        for c in cols:
+            v = e.get(c, "")
+            if isinstance(v, list):
+                v = ", ".join(str(x) for x in v)
+            row.append(v)
+        ind = e.get("indicators_at_entry", {})
+        for ic in indicator_cols:
+            row.append(ind.get(ic, ""))
+        w.writerow(row)
+    return buf.getvalue().encode("utf-8")
+
+
+def render_feedback():
+    """Render the Feedback Loop page — RAG learning visibility."""
+    entries = _load_feedback_log()
+    rules = _load_learned_rules()
+
+    # ---- Summary stats ----
+    total_entries = len(entries)
+    updated_at = rules.get("updated_at", "—")
+    if updated_at and updated_at != "—":
+        try:
+            updated_at = datetime.fromisoformat(updated_at).strftime("%d %b %Y %H:%M")
+        except Exception:
+            pass
+
+    pat_adj = rules.get("pattern_adjustments", {})
+    regime_adj = rules.get("regime_adjustments", {})
+    horizon_adj = rules.get("horizon_adjustments", {})
+    triple_adj = rules.get("triple_adjustments", {})
+    sector_adj = rules.get("sector_adjustments", {})
+
+    filter_pen = rules.get("filter_penalties", {})
+    filter_bst = rules.get("filter_boosts", {})
+    hz_pen = rules.get("horizon_filter_penalties", {})
+    hz_bst = rules.get("horizon_filter_boosts", {})
+    sec_pen = rules.get("sector_filter_penalties", {})
+    sec_bst = rules.get("sector_filter_boosts", {})
+    active_rules = rules.get("rules", [])
+
+    # Build set of penalized/boosted patterns
+    penalized_patterns = set(filter_pen.keys()) | set(hz_pen.keys()) | set(sec_pen.keys())
+    boosted_patterns = set(filter_bst.keys()) | set(hz_bst.keys()) | set(sec_bst.keys())
+
+    # Outcome counts
+    wins = sum(1 for e in entries if e.get("outcome") == "win")
+    losses = sum(1 for e in entries if e.get("outcome") == "loss")
+    fb_wr = f"{wins/total_entries*100:.1f}" if total_entries else "0"
+
+    cards = f'''
+    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4 mb-6">
+      {stat_card("Feedback Entries", total_entries, f"W: {wins} / L: {losses}", "indigo")}
+      {stat_card("Feedback Win Rate", f"{fb_wr}%", "", "green" if float(fb_wr) >= 50 else "red")}
+      {stat_card("Patterns Tracked", len(pat_adj), f"{len(penalized_patterns)} penalized · {len(boosted_patterns)} boosted", "amber")}
+      {stat_card("Regime Rules", len(regime_adj), "", "cyan")}
+      {stat_card("Learned Rules", len(active_rules), f"Updated: {_e(updated_at)}", "green")}
+      {stat_card("Cross-Dim Keys", f"{len(triple_adj)} + {len(sector_adj)}", "triple + sector", "indigo")}
+    </div>'''
+
+    # ---- Section 2: Pattern Adjustments ----
+    pat_rows = ""
+    if pat_adj:
+        for pname, pdata in sorted(pat_adj.items()):
+            actual_wr = pdata.get("actual_win_rate", 0)
+            decay_wr = pdata.get("decay_weighted_win_rate", 0)
+            avg_ret = pdata.get("avg_return", 0)
+            total_t = pdata.get("total_trades", 0)
+            vol = pdata.get("volume_breakdown", {})
+            vol_str = " · ".join(f"{k}: {v}" for k, v in sorted(vol.items())) if vol else "—"
+
+            # Status
+            if pname in penalized_patterns:
+                st_badge = '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-200">Penalized</span>'
+            elif pname in boosted_patterns:
+                st_badge = '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">Boosted</span>'
+            else:
+                st_badge = '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">Neutral</span>'
+
+            wr_cls = "text-emerald-600" if actual_wr >= 50 else "text-red-600"
+            ret_cls = "text-emerald-600" if avg_ret >= 0 else "text-red-600"
+
+            pat_rows += f'''
+            <tr class="hover:bg-blue-50/50 border-b border-gray-100">
+              <td class="px-4 py-2.5 font-medium text-gray-800 text-xs">{_e(pname.replace("_", " ").title())}</td>
+              <td class="px-4 py-2.5 text-right font-mono {wr_cls}">{actual_wr:.1f}%</td>
+              <td class="px-4 py-2.5 text-right font-mono text-gray-600">{decay_wr:.1f}%</td>
+              <td class="px-4 py-2.5 text-right font-mono {ret_cls}">{avg_ret:+.2f}%</td>
+              <td class="px-4 py-2.5 text-right text-gray-600">{total_t}</td>
+              <td class="px-4 py-2.5 text-xs text-gray-500">{_e(vol_str)}</td>
+              <td class="px-4 py-2.5 text-center">{st_badge}</td>
+            </tr>'''
+
+    pat_section = f'''
+    <div class="glass rounded-xl p-6 mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold text-gray-800">Pattern Adjustments</h3>
+        <span class="text-xs text-gray-400">{len(pat_adj)} patterns · temporal decay half-life 60 days</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm"><thead><tr class="border-b border-gray-200">
+          <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Pattern</th>
+          <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Actual WR</th>
+          <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Decay WR</th>
+          <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Avg Return</th>
+          <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Trades</th>
+          <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Volume Breakdown</th>
+          <th class="px-4 py-2 text-center text-xs text-gray-500 uppercase">Status</th>
+        </tr></thead><tbody>{pat_rows}</tbody></table>
+      </div>
+    </div>''' if pat_adj else ""
+
+    # ---- Section 3: Cross-Dimensional Intelligence ----
+
+    def _adj_table(title, adj_dict, key_label="Key"):
+        """Build a collapsible table for adjustment dicts."""
+        if not adj_dict:
+            return ""
+        rows = ""
+        for k, v in sorted(adj_dict.items()):
+            actual_wr = v.get("actual_win_rate", 0)
+            decay_wr = v.get("decay_weighted_win_rate", 0)
+            avg_ret = v.get("avg_return", 0)
+            total_t = v.get("total_trades", 0)
+            wr_cls = "text-emerald-600" if actual_wr >= 50 else "text-red-600"
+            ret_cls = "text-emerald-600" if avg_ret >= 0 else "text-red-600"
+            # Format the key nicely
+            display_key = k.replace("_", " ").replace("|", " → ").title()
+            rows += f'''
+            <tr class="hover:bg-blue-50/50 border-b border-gray-100">
+              <td class="px-4 py-2 text-xs text-gray-800">{_e(display_key)}</td>
+              <td class="px-4 py-2 text-right font-mono {wr_cls}">{actual_wr:.1f}%</td>
+              <td class="px-4 py-2 text-right font-mono text-gray-600">{decay_wr:.1f}%</td>
+              <td class="px-4 py-2 text-right font-mono {ret_cls}">{avg_ret:+.2f}%</td>
+              <td class="px-4 py-2 text-right text-gray-600">{total_t}</td>
+            </tr>'''
+        uid = title.lower().replace(" ", "_").replace("-", "_")
+        return f'''
+        <div class="glass rounded-xl mb-4 overflow-hidden">
+          <button onclick="document.getElementById('adj_{uid}').classList.toggle('hidden'); this.querySelector('.chevron').classList.toggle('rotate-90')" class="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors">
+            <div class="flex items-center gap-3">
+              <h4 class="text-sm font-semibold text-gray-700">{_e(title)}</h4>
+              <span class="text-xs font-medium text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{len(adj_dict)} entries</span>
+            </div>
+            <svg class="w-4 h-4 text-gray-400 chevron transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          </button>
+          <div id="adj_{uid}" class="hidden">
+            <div class="overflow-x-auto px-6 pb-4">
+              <table class="w-full text-sm"><thead><tr class="border-b border-gray-200">
+                <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">{_e(key_label)}</th>
+                <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Actual WR</th>
+                <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Decay WR</th>
+                <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Avg Return</th>
+                <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Trades</th>
+              </tr></thead><tbody>{rows}</tbody></table>
+            </div>
+          </div>
+        </div>'''
+
+    cross_dim = f'''
+    <div class="mb-6">
+      <h3 class="text-lg font-semibold text-gray-800 mb-4">Cross-Dimensional Intelligence</h3>
+      {_adj_table("Regime Adjustments", regime_adj, "Regime")}
+      {_adj_table("Horizon Adjustments", horizon_adj, "Horizon")}
+      {_adj_table("Sector Adjustments", sector_adj, "Sector")}
+      {_adj_table("Triple Adjustments (Pattern × Regime × Horizon)", triple_adj, "Combination")}
+    </div>'''
+
+    # ---- Section 3b: Filter Penalties & Boosts ----
+    def _filter_table(title, pen_dict, bst_dict, uid_prefix):
+        if not pen_dict and not bst_dict:
+            return ""
+        rows = ""
+        all_keys = sorted(set(list(pen_dict.keys()) + list(bst_dict.keys())))
+        for k in all_keys:
+            pen_val = pen_dict.get(k)
+            bst_val = bst_dict.get(k)
+            display = k.replace("_", " ").replace("|", " → ").title()
+            # Values can be dicts with {actual_wr, trades, action, reason} or plain floats
+            if isinstance(pen_val, dict):
+                wr = pen_val.get("actual_wr", 0)
+                action = pen_val.get("action", "")
+                reason = pen_val.get("reason", "")
+                pen_html = f'<span class="font-mono text-red-600">{wr:.1f}% WR</span> <span class="text-red-400 text-[10px]">({_e(action)})</span>'
+                pen_tip = reason
+            elif pen_val is not None:
+                pen_html = f'<span class="font-mono text-red-600">{float(pen_val):.3f}</span>'
+                pen_tip = ""
+            else:
+                pen_html = '<span class="text-gray-300">—</span>'
+                pen_tip = ""
+
+            if isinstance(bst_val, dict):
+                wr = bst_val.get("actual_wr", 0)
+                action = bst_val.get("action", "")
+                reason = bst_val.get("reason", "")
+                bst_html = f'<span class="font-mono text-emerald-600">{wr:.1f}% WR</span> <span class="text-emerald-400 text-[10px]">({_e(action)})</span>'
+                bst_tip = reason
+            elif bst_val is not None:
+                bst_html = f'<span class="font-mono text-emerald-600">{float(bst_val):.3f}</span>'
+                bst_tip = ""
+            else:
+                bst_html = '<span class="text-gray-300">—</span>'
+                bst_tip = ""
+
+            rows += f'''
+            <tr class="hover:bg-blue-50/50 border-b border-gray-100">
+              <td class="px-4 py-2 text-xs text-gray-800">{_e(display)}</td>
+              <td class="px-4 py-2 text-center" title="{_e(pen_tip)}">{pen_html}</td>
+              <td class="px-4 py-2 text-center" title="{_e(bst_tip)}">{bst_html}</td>
+            </tr>'''
+        return f'''
+        <div class="glass rounded-xl mb-4 overflow-hidden">
+          <button onclick="document.getElementById('{uid_prefix}_tbl').classList.toggle('hidden'); this.querySelector('.chevron').classList.toggle('rotate-90')" class="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors">
+            <div class="flex items-center gap-3">
+              <h4 class="text-sm font-semibold text-gray-700">{_e(title)}</h4>
+              <span class="text-xs font-medium text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{len(all_keys)} entries</span>
+            </div>
+            <svg class="w-4 h-4 text-gray-400 chevron transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          </button>
+          <div id="{uid_prefix}_tbl" class="hidden">
+            <div class="overflow-x-auto px-6 pb-4">
+              <table class="w-full text-sm"><thead><tr class="border-b border-gray-200">
+                <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Key</th>
+                <th class="px-4 py-2 text-center text-xs text-gray-500 uppercase">Penalty</th>
+                <th class="px-4 py-2 text-center text-xs text-gray-500 uppercase">Boost</th>
+              </tr></thead><tbody>{rows}</tbody></table>
+            </div>
+          </div>
+        </div>'''
+
+    filter_section = f'''
+    <div class="mb-6">
+      <h3 class="text-lg font-semibold text-gray-800 mb-4">Active Filters</h3>
+      {_filter_table("Pattern Filters", filter_pen, filter_bst, "flt_pat")}
+      {_filter_table("Horizon Filters", hz_pen, hz_bst, "flt_hz")}
+      {_filter_table("Sector Filters", sec_pen, sec_bst, "flt_sec")}
+    </div>'''
+
+    # ---- Section 4: Raw Feedback Log ----
+    log_rows = ""
+    for e in reversed(entries):  # newest first
+        outcome = e.get("outcome", "")
+        out_cls = "text-emerald-600 font-semibold" if outcome == "win" else "text-red-600 font-semibold"
+        ret_val = e.get("actual_return_pct")
+        ret_cls = "text-emerald-600" if (ret_val or 0) >= 0 else "text-red-600"
+        pats = e.get("patterns", [])
+        pat_str = ", ".join(pats) if isinstance(pats, list) else str(pats)
+        ts = e.get("timestamp", "")
+        if ts:
+            try:
+                ts = datetime.fromisoformat(ts).strftime("%d %b %y %H:%M")
+            except Exception:
+                pass
+        log_rows += f'''
+        <tr class="hover:bg-blue-50/50 border-b border-gray-100">
+          <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{_e(ts)}</td>
+          <td class="px-3 py-2 text-xs font-medium text-gray-800">{_e(_ticker(e.get("ticker","")))}</td>
+          <td class="px-3 py-2 text-xs text-gray-600">{_e(e.get("direction",""))}</td>
+          <td class="px-3 py-2 text-xs text-gray-600 max-w-[200px] truncate" title="{_e(pat_str)}">{_e(pat_str)}</td>
+          <td class="px-3 py-2 text-xs text-gray-600">{_e(e.get("horizon_label",""))}</td>
+          <td class="px-3 py-2 text-xs text-right text-gray-600">{e.get("predicted_win_rate","—")}</td>
+          <td class="px-3 py-2 text-xs text-right {out_cls}">{_e(outcome)}</td>
+          <td class="px-3 py-2 text-xs text-right font-mono {ret_cls}">{_pct(ret_val)}</td>
+          <td class="px-3 py-2 text-xs text-gray-500">{_e(e.get("exit_reason",""))}</td>
+        </tr>'''
+
+    log_section = f'''
+    <div class="glass rounded-xl p-6 mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold text-gray-800">Raw Feedback Log</h3>
+        <a href="/feedback/download" class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          Download CSV
+        </a>
+      </div>
+      <div class="overflow-x-auto max-h-[500px] overflow-y-auto scrollbar-thin">
+        <table class="w-full text-sm"><thead class="sticky top-0 bg-white"><tr class="border-b border-gray-200">
+          <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Timestamp</th>
+          <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Ticker</th>
+          <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Dir</th>
+          <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Patterns</th>
+          <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Horizon</th>
+          <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase">Pred WR</th>
+          <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase">Outcome</th>
+          <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase">Return</th>
+          <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Exit Reason</th>
+        </tr></thead><tbody>{log_rows}</tbody></table>
+      </div>
+    </div>'''
+
+    # ---- Learned Rules ----
+    rules_html = ""
+    if active_rules:
+        rule_items = ""
+        for r in active_rules:
+            rule_items += f'''
+            <div class="glass rounded-lg p-4 mb-2">
+              <div class="text-sm text-gray-800">{_e(json.dumps(r, indent=2) if isinstance(r, dict) else str(r))}</div>
+            </div>'''
+        rules_html = f'''
+        <div class="mb-6">
+          <h3 class="text-lg font-semibold text-gray-800 mb-4">Learned Rules</h3>
+          {rule_items}
+        </div>'''
+
+    body = f'''
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-2xl font-bold text-gray-800">RAG Feedback Loop</h2>
+        <p class="text-sm text-gray-500 mt-1">How the system learns from trade outcomes — pattern penalties, regime adjustments, and cross-dimensional intelligence</p>
+      </div>
+    </div>
+    {cards}
+    {pat_section}
+    {filter_section}
+    {cross_dim}
+    {rules_html}
+    {log_section}'''
+    return page_shell("Feedback Loop", "feedback", body)
+
+
 def render_engine(action_result=None):
     scan_log = q_scan_log()
     log_lines = get_engine_log()
@@ -1874,11 +2442,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "signals": ("signals", render_signals),
             "positions": ("positions", render_positions),
             "history": ("history", render_history),
+            "market": ("market", render_market_indices),
             "performance": ("performance", render_performance),
             "engine": ("engine", lambda: render_engine()),
+            "feedback": ("feedback", render_feedback),
         }
 
-        if path == "engine/stream":
+        if path == "feedback/download":
+            # CSV download of feedback log
+            csv_bytes = _feedback_csv_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", "attachment; filename=traqo_feedback_log.csv")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(csv_bytes)
+        elif path == "engine/stream":
             # JSON endpoint for live polling
             status = get_engine_status()
             self.send_response(200)

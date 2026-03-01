@@ -49,6 +49,39 @@ from trading_config import (
     is_tradeable_pattern,
 )
 
+# FIX #1: Import meta-classifier for secondary filtering
+try:
+    from meta_classifier import MetaClassifier
+    HAVE_META_CLASSIFIER = True
+except ImportError:
+    HAVE_META_CLASSIFIER = False
+    log_placeholder = logging.getLogger("paper_trader")
+
+# TIER 1: Position Risk Monitor
+try:
+    from position_risk_monitor import (
+        PositionRiskMonitor,
+        assess_all_positions,
+        log_risk_report,
+        persist_health_results,
+        ensure_entry_regime_column,
+        ensure_monitoring_table,
+        get_current_market_regime as get_live_regime,
+        _classify_entry_regime,
+        set_trajectory_profiler,
+    )
+    HAVE_POSITION_RISK_MONITOR = True
+except ImportError:
+    HAVE_POSITION_RISK_MONITOR = False
+
+# Trajectory Health (RAG-informed mid-trade exit intelligence)
+HAVE_TRAJECTORY_HEALTH = False
+try:
+    from trajectory_health import TrajectoryProfiler
+    HAVE_TRAJECTORY_HEALTH = True
+except ImportError:
+    pass
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -73,6 +106,26 @@ MIN_WIN_RATE = 55.0
 MIN_CONFIDENCE = "MEDIUM"
 MIN_RR_RATIO = 1.5
 MIN_MATCHES = 5
+
+# FIX #2: NEW FILTER CONSTANTS
+# Market regime: decline tolerance threshold (if market down >X%, reduce bullish signals)
+MARKET_DECLINE_THRESHOLD_PCT = -1.0  # If NIFTY50 daily return < -1%, be cautious with bullish
+MARKET_DECLINE_BULLISH_MULTIPLIER = 0.7  # Scale down bullish signal confidence
+
+# Pattern-specific minimum win rates (from Feb 27 analysis)
+# Current live patterns have 10-30% win rate - too low!
+PATTERN_MIN_WIN_RATES = {
+    "harami_cross": 30.0,           # Current: 15%, need improvement
+    "hammer": 30.0,                 # Current: 16.7%
+    "bullish_kicker": 35.0,         # Current: 24.2%
+    "belt_hold_bullish": 35.0,      # Current: 24.6%
+    "homing_pigeon": 35.0,          # Current: 10% - worst performer
+    "rising_three_methods": 35.0,   # Current: 25%
+    "three_black_crows": 40.0,      # Current: 30% - slightly better
+}
+
+# ML classifier gating: only accept trades > this probability
+META_CLASSIFIER_PROBABILITY_THRESHOLD = 0.55  # FIX #3: Filter low-confidence trades
 
 # Horizon configuration
 HORIZON_CONFIG = {
@@ -179,6 +232,179 @@ def get_trading_days_between(start: date, end: date) -> List[date]:
             days.append(current)
         current += timedelta(days=1)
     return days
+
+
+# ============================================================
+# FIX #1: MARKET REGIME DETECTION
+# ============================================================
+def get_market_regime(scan_date: date) -> dict:
+    """Detect market regime. Returns trend direction and strength."""
+    try:
+        # Get NIFTY 50 data
+        end_date = scan_date + timedelta(days=1)
+        nifty = yf.download("^NSEI", start=scan_date - timedelta(days=100), 
+                           end=end_date, progress=False, quiet=True)
+        
+        if nifty.empty or len(nifty) < 10:
+            return {"trend": "unknown", "daily_return": 0.0, "is_declining": False}
+        
+        # Get today's data
+        today_row = nifty.loc[scan_date] if scan_date in nifty.index else nifty.iloc[-1]
+        today_close = float(today_row["Close"])
+        today_open = float(today_row["Open"])
+        daily_return = ((today_close - today_open) / today_open * 100)
+        
+        # Get 10-day SMA and 50-day SMA
+        sma_10 = nifty.iloc[-10:-1]["Close"].mean()
+        sma_50 = nifty.iloc[-50:-1]["Close"].mean()
+        
+        # Determine trend
+        if today_close > sma_10 > sma_50:
+            trend = "strong_uptrend"
+        elif today_close > sma_50:
+            trend = "uptrend"
+        elif today_close < sma_10 < sma_50:
+            trend = "strong_downtrend"
+        elif today_close < sma_50:
+            trend = "downtrend"
+        else:
+            trend = "sideways"
+        
+        is_declining = daily_return < MARKET_DECLINE_THRESHOLD_PCT
+        
+        return {
+            "trend": trend,
+            "daily_return": round(daily_return, 2),
+            "is_declining": is_declining,
+        }
+    except Exception as e:
+        log.warning(f"Market regime detection failed: {e}")
+        return {"trend": "unknown", "daily_return": 0.0, "is_declining": False}
+
+
+# ============================================================
+# FIX #2: LOAD PATTERN WIN RATES FROM FEEDBACK
+# ============================================================
+def load_pattern_win_rates() -> dict:
+    """Load actual pattern win rates from feedback log."""
+    pattern_stats = {}
+    try:
+        if not os.path.exists("feedback/feedback_log.json"):
+            return pattern_stats
+        
+        with open("feedback/feedback_log.json") as f:
+            log_data = json.load(f)
+        
+        # Aggregate by pattern
+        from collections import defaultdict
+        stats = defaultdict(lambda: {"wins": 0, "losses": 0})
+        
+        for entry in log_data:
+            outcome = entry.get("outcome")
+            patterns = entry.get("patterns", [])
+            for p in patterns:
+                if outcome == "win":
+                    stats[p]["wins"] += 1
+                elif outcome == "loss":
+                    stats[p]["losses"] += 1
+        
+        # Calculate win rates
+        for pattern, data in stats.items():
+            total = data["wins"] + data["losses"]
+            if total > 0:
+                pattern_stats[pattern] = {
+                    "wins": data["wins"],
+                    "losses": data["losses"],
+                    "total": total,
+                    "win_rate": data["wins"] / total * 100,
+                }
+        
+        return pattern_stats
+    except Exception as e:
+        log.warning(f"Failed to load pattern win rates: {e}")
+        return pattern_stats
+
+
+# ============================================================
+# FIX #3: ML CLASSIFIER GATING
+# ============================================================
+def apply_meta_classifier_gate(result: dict, sp: 'StatisticalPredictor') -> bool:
+    """Apply ML classifier to filter trades. Returns True if signal is high confidence."""
+    if not HAVE_META_CLASSIFIER or not result:
+        return True  # No filter, accept all
+    
+    try:
+        clf = MetaClassifier()
+        if not clf.load():
+            return True  # Model not found, accept
+        
+        # Build stat_pred input
+        stat_pred = {
+            "predicted_direction": result.get("direction"),
+            "edge": result.get("edge", 0),
+            "profit_factor": result.get("profit_factor", 1.0),
+            "confidence_score": result.get("confidence_level_numeric", 0.5),
+            "n_matches": result.get("n_matches", 0),
+            "match_tier": result.get("match_tier", "tier_2"),
+            "rr_ratio": result.get("rr_ratio", 1.0),
+        }
+        
+        # Get prediction
+        prob = clf.predict_probability(result.get("indicators", {}), stat_pred)
+        
+        if prob is None:
+            return True
+        
+        is_pass = prob >= META_CLASSIFIER_PROBABILITY_THRESHOLD
+        if not is_pass:
+            log.debug(f"ML gate rejected: {result.get('ticker')} "
+                     f"prob={prob:.2f} < {META_CLASSIFIER_PROBABILITY_THRESHOLD}")
+        return is_pass
+    except Exception as e:
+        log.warning(f"ML classifier gating failed: {e}")
+        return True  # On error, accept
+
+
+# ============================================================
+# FIX #4: CONFIDENCE SCALING BASED ON PATTERN WIN RATES
+# ============================================================
+_CACHED_PATTERN_WIN_RATES = None
+_CACHED_PATTERN_RATES_TIME = None
+
+def get_cached_pattern_win_rates() -> dict:
+    """Cache pattern win rates to avoid repeated file reads."""
+    global _CACHED_PATTERN_WIN_RATES, _CACHED_PATTERN_RATES_TIME
+    
+    now = _time.time()
+    # Refresh every 1 hour
+    if _CACHED_PATTERN_WIN_RATES is None or (now - _CACHED_PATTERN_RATES_TIME) > 3600:
+        _CACHED_PATTERN_WIN_RATES = load_pattern_win_rates()
+        _CACHED_PATTERN_RATES_TIME = now
+    
+    return _CACHED_PATTERN_WIN_RATES
+
+
+def scale_confidence_by_pattern_performance(patterns: list, base_confidence: str) -> str:
+    """Reduce confidence if patterns have poor historical win rates."""
+    if not patterns:
+        return base_confidence
+    
+    pattern_wr = get_cached_pattern_win_rates()
+    worst_wr = 100.0
+    
+    for p in patterns:
+        if p in pattern_wr:
+            wr = pattern_wr[p]["win_rate"]
+            if wr < worst_wr:
+                worst_wr = wr
+    
+    # If worst performer has < 30% win rate, downgrade confidence
+    if worst_wr < 30:
+        return "LOW"
+    elif worst_wr < 40:
+        return "MEDIUM" if base_confidence == "HIGH" else base_confidence
+    else:
+        return base_confidence
 
 
 def add_trading_days(start: date, n: int) -> date:
@@ -315,8 +541,8 @@ class PaperTradeDB:
                     patterns, entry_price, target_price, sl_price,
                     target_pct, sl_pct, rr_ratio,
                     predicted_win_rate, predicted_pf, confidence, n_matches, match_tier,
-                    entry_date, expiry_date, status, indicators_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?)
+                    entry_date, expiry_date, status, indicators_json, entry_regime
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?)
             """, (
                 trade["ticker"], trade.get("instrument"), trade.get("sector"),
                 trade["direction"], trade["horizon_days"], trade.get("horizon_label"),
@@ -327,6 +553,7 @@ class PaperTradeDB:
                 trade.get("confidence"), trade.get("n_matches"), trade.get("match_tier"),
                 trade["entry_date"], trade["expiry_date"],
                 json.dumps(trade.get("indicators", {})),
+                trade.get("entry_regime", "neutral"),
             ))
             self.conn.commit()
             return cur.lastrowid
@@ -596,6 +823,25 @@ class PaperTrader:
     def __init__(self, db_path: str = DB_PATH):
         self.db = PaperTradeDB(db_path)
         self.sp = StatisticalPredictor()
+
+        # Tier 1: Position Risk Monitor
+        self.risk_monitor = None
+        if HAVE_POSITION_RISK_MONITOR:
+            try:
+                self.risk_monitor = PositionRiskMonitor(db_conn=self.db.conn)
+                log.info("Position Risk Monitor (Tier 1) enabled")
+            except Exception as e:
+                log.warning(f"Position Risk Monitor init failed: {e}")
+
+        # Trajectory Health: share the StatisticalPredictor to avoid dup load
+        if HAVE_TRAJECTORY_HEALTH and HAVE_POSITION_RISK_MONITOR:
+            try:
+                profiler = TrajectoryProfiler(statistical_predictor=self.sp)
+                set_trajectory_profiler(profiler)
+                log.info("Trajectory Health (RAG mid-trade intelligence) enabled")
+            except Exception as e:
+                log.warning(f"Trajectory Health init failed: {e}")
+
         log.info("Paper Trader initialized")
 
     # ----------------------------------------------------------
@@ -634,6 +880,10 @@ class PaperTrader:
         # 3. MONITOR open positions
         close_result = self.monitor_open_positions(today)
         summary["trades_closed"] = close_result.get("closed", 0)
+
+        # 3b. TIER 1: Position risk assessment on remaining open positions
+        risk_summary = self._run_position_risk_check(today)
+        summary["risk_check"] = risk_summary
 
         # 4. DAILY REPORT
         self._generate_daily_report(today)
@@ -721,6 +971,11 @@ class PaperTrader:
             log.info(f"Already scanned {date_str} — skip")
             return {"signals_found": 0, "trades_entered": 0, "skipped": True}
 
+        # FIX #1: Get market regime at start of scan
+        market_regime = get_market_regime(scan_date)
+        log.info(f"Market regime: {market_regime['trend']} "
+                f"(daily return: {market_regime['daily_return']:.2f}%)")
+
         log.info(f"SCANNING {len(SCAN_TICKERS)} stocks for {date_str}...")
         t0 = _time.time()
         signals_found = 0
@@ -753,6 +1008,11 @@ class PaperTrader:
                     # Standard filters
                     conf = result.get("confidence", "LOW")
                     rr = hz_data.get("rr_ratio", 0)
+                    
+                    # FIX #4: Adjust pattern confidence based on historical win rates
+                    conf = scale_confidence_by_pattern_performance(
+                        result.get("patterns_tradeable", []), conf
+                    )
 
                     # Feedback-based filter adjustments
                     fb_penalties = self.sp.feedback_filter_penalties
@@ -776,6 +1036,11 @@ class PaperTrader:
                             wr_threshold = max(45.0, wr_threshold - 5.0)
                             rr_threshold = max(1.2, rr_threshold - 0.2)
 
+                    # FIX #1: Check market regime - reduce bullish signals if market declining
+                    if market_regime["is_declining"] and result["direction"] == "BULLISH":
+                        wr = wr * MARKET_DECLINE_BULLISH_MULTIPLIER
+                        skip_reasons.append(f"Market declining - bullish confidence reduced ({market_regime['daily_return']:.2f}%)")
+                    
                     if wr < wr_threshold:
                         skip_reasons.append("Low Win Rate")
                     if conf == "LOW":
@@ -803,8 +1068,35 @@ class PaperTrader:
                         })
                         continue
 
+                    # FIX #3: Apply ML classifier secondary gate
+                    if not apply_meta_classifier_gate(result, self.sp):
+                        expiry = add_trading_days(scan_date, days)
+                        hz_direction = hz_data.get("direction", result["direction"])
+                        filtered_for_shadow.append({
+                            "ticker": ticker, "instrument": result.get("instrument"),
+                            "direction": hz_direction, "horizon_days": days,
+                            "horizon_label": h_label,
+                            "patterns": ",".join(result.get("patterns_tradeable", [])),
+                            "entry_price": result["entry"],
+                            "target_price": hz_data["target"], "sl_price": hz_data["sl"],
+                            "target_pct": hz_data.get("target_pct"), "sl_pct": hz_data.get("sl_pct"),
+                            "predicted_win_rate": round(wr, 1),
+                            "predicted_pf": result.get("profit_factor"),
+                            "confidence": result.get("confidence"),
+                            "entry_date": date_str, "expiry_date": expiry.isoformat(),
+                            "skip_reasons": ["ML classifier rejected low probability"],
+                        })
+                        continue
+
                     expiry = add_trading_days(scan_date, days)
                     hz_direction = hz_data.get("direction", result["direction"])
+                    # Derive entry regime from current indicators
+                    _entry_regime = "neutral"
+                    if HAVE_POSITION_RISK_MONITOR:
+                        _ind = result.get("indicators", {})
+                        _ts = _ind.get("trend_short", "neutral")
+                        _entry_regime = _ts if _ts in ("bullish", "bearish") else "neutral"
+
                     trade = {
                         "ticker": ticker,
                         "instrument": result.get("instrument"),
@@ -827,6 +1119,7 @@ class PaperTrader:
                         "entry_date": date_str,
                         "expiry_date": expiry.isoformat(),
                         "indicators": result.get("indicators", {}),
+                        "entry_regime": _entry_regime,
                     }
                     row_id = self.db.insert_trade(trade)
                     if row_id:
@@ -1307,9 +1600,110 @@ class PaperTrader:
         # --- Monitor shadow trades (#6) ---
         shadow_closed = self._monitor_shadow_trades(check_date)
 
+        # --- TIER 1: Risk-based early exits ---
+        risk_exits = self._apply_risk_exits(check_date)
+
         log.info(f"MONITOR DONE: {checked} checked, {closed} closed"
-                 f"{f', {shadow_closed} shadow closed' if shadow_closed else ''}")
-        return {"checked": checked, "closed": closed, "shadow_closed": shadow_closed}
+                 f"{f', {shadow_closed} shadow closed' if shadow_closed else ''}"
+                 f"{f', {risk_exits} risk exits' if risk_exits else ''}")
+        return {"checked": checked, "closed": closed,
+                "shadow_closed": shadow_closed, "risk_exits": risk_exits}
+
+    # ----------------------------------------------------------
+    # TIER 1: POSITION RISK CHECK + EARLY EXITS
+    # ----------------------------------------------------------
+    def _run_position_risk_check(self, check_date: date = None) -> dict:
+        """Run Tier-1 risk assessment on all remaining open positions."""
+        if not HAVE_POSITION_RISK_MONITOR or self.risk_monitor is None:
+            return {}
+        try:
+            summary = self.risk_monitor.run_check(check_date)
+            return summary
+        except Exception as e:
+            log.warning(f"Position risk check failed: {e}")
+            return {}
+
+    def _apply_risk_exits(self, check_date: date = None) -> int:
+        """Close positions where Tier-1 confidence < 35% (EXIT IMMEDIATELY).
+
+        For positions in the REDUCE zone (35-64%), we tighten the SL by 40%
+        rather than force-close, so the normal monitor loop handles it.
+        """
+        if not HAVE_POSITION_RISK_MONITOR:
+            return 0
+        if check_date is None:
+            check_date = date.today()
+
+        open_trades = self.db.get_open_trades()
+        if not open_trades:
+            return 0
+
+        health_results = assess_all_positions(open_trades, check_date)
+        exits_done = 0
+
+        for h in health_results:
+            trade_id = h["trade_id"]
+            action = h["action"]
+
+            if action == "EXIT IMMEDIATELY":
+                # Force-close at current market price
+                trade = next((t for t in open_trades if t["id"] == trade_id), None)
+                if trade is None:
+                    continue
+                try:
+                    df = yf.download(trade["ticker"], period="5d", progress=False, quiet=True)
+                    if df is None or df.empty:
+                        continue
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = [c[0] for c in df.columns]
+                    last_close = float(df["Close"].iloc[-1])
+                    ret = self._calc_return(trade, last_close)
+                    self.db.close_trade(
+                        trade_id, last_close, check_date.isoformat(),
+                        f"risk_exit (conf={h['adjusted_confidence']:.0f}% traj={h.get('trajectory_label','N/A')})",
+                        ret, "LOST" if ret < 0 else "WON",
+                    )
+                    exits_done += 1
+                    log.info(
+                        f"  RISK EXIT: {trade['ticker']} {trade.get('horizon_label','')} "
+                        f"conf={h['adjusted_confidence']:.0f}% "
+                        f"traj={h.get('trajectory_label','N/A')}({h.get('trajectory_adjustment',0):+.0f}) "
+                        f"→ closed ({ret:+.2f}%)"
+                    )
+                except Exception as e:
+                    log.warning(f"  Risk exit failed for {h['ticker']}: {e}")
+
+            elif action == "REDUCE 50%":
+                # Tighten SL by 40% (bring it closer to entry price)
+                trade = next((t for t in open_trades if t["id"] == trade_id), None)
+                if trade is None:
+                    continue
+                try:
+                    entry = trade["entry_price"]
+                    old_sl = trade["sl_price"]
+                    direction = (trade.get("direction") or "").upper()
+
+                    if direction == "BULLISH":
+                        # Move SL up (tighter)
+                        new_sl = round(old_sl + (entry - old_sl) * 0.40, 2)
+                    else:
+                        # Move SL down (tighter)
+                        new_sl = round(old_sl - (old_sl - entry) * 0.40, 2)
+
+                    self.db.conn.execute(
+                        "UPDATE trades SET sl_price=?, updated_at=datetime('now') WHERE id=?",
+                        (new_sl, trade_id),
+                    )
+                    self.db.conn.commit()
+                    log.info(
+                        f"  RISK REDUCE: {trade['ticker']} {trade.get('horizon_label','')} "
+                        f"conf={h['adjusted_confidence']:.0f}% — SL tightened "
+                        f"{old_sl:.2f} → {new_sl:.2f}"
+                    )
+                except Exception as e:
+                    log.warning(f"  Risk reduce failed for {h['ticker']}: {e}")
+
+        return exits_done
 
     def _check_trade_exit(self, trade: dict, high: float, low: float,
                           close: float) -> Optional[dict]:
@@ -1897,6 +2291,17 @@ if __name__ == "__main__":
             log.info("No pending signals to discard")
     elif cmd == "monitor":
         engine.monitor_open_positions()
+    elif cmd == "risk_check":
+        # Tier-1 position risk assessment
+        summary = engine._run_position_risk_check(date.today())
+        exits = summary.get("action_counts", {}).get("EXIT IMMEDIATELY", 0)
+        reduces = summary.get("action_counts", {}).get("REDUCE 50%", 0)
+        holds = summary.get("action_counts", {}).get("HOLD", 0)
+        print(f"\nRisk Summary: {exits} EXIT, {reduces} REDUCE, {holds} HOLD")
+    elif cmd == "risk_exit":
+        # Actually apply risk-based exits
+        count = engine._apply_risk_exits(date.today())
+        print(f"\nRisk exits applied: {count} positions closed")
     elif cmd == "feedback":
         engine.feed_outcomes_to_rag()
     elif cmd == "stats":
@@ -1904,4 +2309,4 @@ if __name__ == "__main__":
     elif cmd == "run":
         engine.run()
     else:
-        print(f"Unknown: {cmd}. Use: run|scan|scan_preview|approve|discard|monitor|feedback|stats")
+        print(f"Unknown: {cmd}. Use: run|scan|scan_preview|approve|discard|monitor|risk_check|risk_exit|feedback|stats")

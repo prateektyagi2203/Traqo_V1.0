@@ -1,0 +1,42 @@
+# .copilotignore — Block token-heavy files from GitHub Copilot indexing
+
+# Archive and deprecated code (never index)
+archive/
+archive/**/*
+
+# Large data directories (regenerable)
+daily_10yr/
+enriched_v2/
+intraday_15min_v2/
+rag_documents_v2/
+
+# Generated/cached files
+__pycache__/
+*.pyc
+*.pyo
+models/*.pkl
+charts/
+*.png
+*.jpg
+
+# Runtime data (user-specific)
+paper_trades/
+feedback/daily_reports/
+feedback/trades.json
+
+# Large JSON data files (indexed via code, not content)
+*.json
+data/*.json
+
+# Session/temporary files
+SESSION_STATE_*.md
+*_stderr.txt
+*_err.txt
+*.log
+
+# Git and IDE
+.git/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
