@@ -895,7 +895,6 @@ def render_signals():
     summary_badges = f'''
     <div class="flex gap-3 flex-wrap mb-6">
       {badge(f'{len(trades)} signals', "info")}
-      {badge(f'{sum(1 for t in trades if t["direction"]=="BULLISH")} bullish', "bullish")}
     </div>'''
 
     tables = ""
