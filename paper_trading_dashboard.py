@@ -1940,6 +1940,8 @@ def render_feedback():
     sh = shadow_stats
     sh_quality = "✓ Working" if sh['gap'] >= 10 else ("⚠ Moderate" if sh['gap'] >= 5 else "⚠ Weak")
     sh_quality_color = "emerald" if sh['gap'] >= 10 else ("amber" if sh['gap'] >= 5 else "red")
+    gap_color = "emerald" if sh['gap'] > 0 else "red"
+    gap_msg = "✓ Filters are working as intended." if sh['gap'] >= 10 else ("⚠ Monitor filter effectiveness." if sh['gap'] >= 5 else "⚠ Consider loosening filters.")
     
     # Horizon comparison rows
     hz_rows = ""
@@ -1951,6 +1953,8 @@ def render_feedback():
         if sh_wr is not None and real_wr is not None:
             sh_cls = "text-emerald-600" if sh_wr >= 50 else "text-red-600"
             real_cls = "text-emerald-600" if real_wr >= 50 else "text-red-600"
+            gap_val = real_wr - sh_wr
+            gap_cls = "text-emerald-600" if gap_val > 0 else "text-red-600"
             hz_rows += f'''
             <tr class="hover:bg-blue-50/50 border-b border-gray-100">
               <td class="px-4 py-2 text-xs font-medium text-gray-800">{_e(hz)}</td>
@@ -1958,7 +1962,7 @@ def render_feedback():
               <td class="px-4 py-2 text-right text-xs text-gray-600">{hz_data['shadow_count']}</td>
               <td class="px-4 py-2 text-right text-xs font-mono {real_cls}">{real_wr:.1f}%</td>
               <td class="px-4 py-2 text-right text-xs text-gray-600">{hz_data['real_count']}</td>
-              <td class="px-4 py-2 text-right text-xs font-mono {('text-emerald-600' if (real_wr - sh_wr) > 0 else 'text-red-600')}">{(real_wr - sh_wr):+.1f}pp</td>
+              <td class="px-4 py-2 text-right text-xs font-mono {gap_cls}">{gap_val:+.1f}pp</td>
             </tr>'''
         elif sh_wr is not None:
             sh_cls = "text-emerald-600" if sh_wr >= 50 else "text-red-600"
@@ -1984,7 +1988,7 @@ def render_feedback():
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         {stat_card("Shadow Win Rate", f"{sh['shadow_wr']:.1f}%", f"{sh['shadow_closed']} closed", "amber")}
         {stat_card("Real Win Rate", f"{sh['real_wr']:.1f}%", f"{sh['real_total']} closed", "green")}
-        {stat_card("Filter Gap", f"{sh['gap']:+.1f}pp", "Real outperforms", "emerald" if sh['gap'] > 0 else "red")}
+        {stat_card("Filter Gap", f"{sh['gap']:+.1f}pp", "Real outperforms", gap_color)}
         {stat_card("Filter Efficiency", f"{sh['efficiency']:.2f}x", "Real / Shadow ratio", sh_quality_color)}
       </div>
       
@@ -1993,7 +1997,7 @@ def render_feedback():
         <div class="text-sm text-gray-600 bg-{sh_quality_color}-50 border border-{sh_quality_color}-200 rounded-lg p-4">
           {sh_quality}: Filtered signals underperform real trades by <span class="font-semibold">{sh['gap']:.1f} percentage points</span>.
           Your filters are <span class="font-semibold">{sh['efficiency']:.2f}x more effective</span> than random selections.
-          {'✓ Filters are working as intended.' if sh['gap'] >= 10 else '⚠ Monitor filter effectiveness.' if sh['gap'] >= 5 else '⚠ Consider loosening filters.'}
+          {gap_msg}
         </div>
       </div>
       
