@@ -996,9 +996,6 @@ def render_positions():
             target_p = t["target_price"] or 0
             sl_p = t["sl_price"] or 0
             is_bull = t["direction"] == "BULLISH"
-            
-            # Determine if trade is on-track or off-track (based on target achievement)
-            track_status = "on-track" if (cur_price and target_p and cur_price >= target_p) else "off-track"
 
             if cur_price and entry_p:
                 pnl_pct = (cur_price - entry_p) / entry_p * 100
@@ -1061,7 +1058,7 @@ def render_positions():
 
             hz_label = t.get("horizon_label", "") or ""
             cards += f'''
-            <div class="glass rounded-xl p-5 hover:border-blue-300 transition-all position-card relative" data-horizon="{_e(hz_label)}" data-track="{_e(track_status)}" data-expiry="{t.get('expiry_date','')}" data-id="{t['id']}">
+            <div class="glass rounded-xl p-5 hover:border-blue-300 transition-all position-card relative" data-horizon="{_e(hz_label)}" data-expiry="{t.get('expiry_date','')}" data-id="{t['id']}">
               <label class="select-checkbox-wrap hidden absolute top-3 left-3 z-10 cursor-pointer" title="Select">
                 <input type="checkbox" class="pos-checkbox w-5 h-5 rounded border-gray-400 text-red-600 focus:ring-red-500 cursor-pointer" data-id="{t['id']}">
               </label>
@@ -1119,17 +1116,9 @@ def render_positions():
 
     # Build horizon filter buttons from actual data
     horizon_counts = {}
-    track_counts = {"on-track": 0, "off-track": 0}
     for t in trades:
         hz = t.get("horizon_label", "") or ""
         horizon_counts[hz] = horizon_counts.get(hz, 0) + 1
-        
-        # Count on-track vs off-track
-        cur_price = live_prices.get(t["ticker"])
-        target_p = t.get("target_price") or 0
-        is_on_track = cur_price and target_p and cur_price >= target_p
-        track_status = "on-track" if is_on_track else "off-track"
-        track_counts[track_status] += 1
 
     # Sort horizons by horizon_days
     hz_order = sorted(horizon_counts.keys(), key=lambda h: next((t.get("horizon_days", 0) for t in trades if (t.get("horizon_label") or "") == h), 0))
@@ -1138,9 +1127,6 @@ def render_positions():
     for hz in hz_order:
         cnt = horizon_counts[hz]
         hz_buttons += f'<button onclick="filterPositions(this, \'{_e(hz)}\')" class="hz-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700 transition-all" data-hz="{_e(hz)}">{_e(hz)} <span class="text-gray-400 ml-1">({cnt})</span></button>'
-
-    on_track_cnt = track_counts.get("on-track", 0)
-    off_track_cnt = track_counts.get("off-track", 0)
 
     # Collect unique expiry dates with counts, sorted chronologically
     expiry_counts = {}
@@ -1177,13 +1163,6 @@ def render_positions():
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider mr-1 w-16">Status:</span>
-        <button onclick="filterByTrack(this, 'ALL')" class="track-filter-btn active-track-filter px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-300 bg-blue-50 text-blue-700 transition-all" data-track="ALL">All <span class="text-blue-400 ml-1">({len(trades)})</span></button>
-        <button onclick="filterByTrack(this, 'on-track')" class="track-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-emerald-600 hover:bg-emerald-50 hover:border-emerald-300 transition-all" data-track="on-track">✓ On Track ({on_track_cnt})</button>
-        <button onclick="filterByTrack(this, 'off-track')" class="track-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-amber-600 hover:bg-amber-50 hover:border-amber-300 transition-all" data-track="off-track">⚠ Off Track ({off_track_cnt})</button>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-2">
         <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider mr-1 w-16">Expiry:</span>
         <button onclick="filterByExpiry(this, 'ALL')" class="exp-filter-btn active-exp-filter px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-300 bg-blue-50 text-blue-700 transition-all" data-exp="ALL">All</button>
         {expiry_buttons}
@@ -1194,19 +1173,17 @@ def render_positions():
     filter_js = '''
     <script>
     (function() {
-      var activeHz = 'ALL', activeTrack = 'ALL', activeExp = 'ALL';
+      var activeHz = 'ALL', activeExp = 'ALL';
 
       function applyFilters() {
         var cards = document.querySelectorAll('.position-card');
         var shown = 0;
         cards.forEach(function(card) {
           var hz = card.getAttribute('data-horizon');
-          var track = card.getAttribute('data-track');
           var exp = card.getAttribute('data-expiry');
           var hzMatch = (activeHz === 'ALL' || hz === activeHz);
-          var trackMatch = (activeTrack === 'ALL' || track === activeTrack);
           var expMatch = (activeExp === 'ALL' || exp === activeExp);
-          if (hzMatch && trackMatch && expMatch) {
+          if (hzMatch && expMatch) {
             card.style.display = '';
             shown++;
           } else {
@@ -1217,7 +1194,6 @@ def render_positions():
         if (summary) {
           var parts = [];
           if (activeHz !== 'ALL') parts.push(activeHz);
-          if (activeTrack !== 'ALL') parts.push(activeTrack === 'on-track' ? 'On Track' : 'Off Track');
           if (activeExp !== 'ALL') parts.push('expiry ' + activeExp);
           var label = parts.length ? parts.join(' + ') : 'all';
           summary.textContent = 'Showing ' + shown + ' of ' + cards.length + ' positions' + (parts.length ? ' \u2014 ' + label : '');
@@ -1232,17 +1208,6 @@ def render_positions():
         });
         btn.classList.add('active-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
         btn.classList.remove('bg-white', 'text-gray-600', 'border-gray-200');
-        applyFilters();
-      };
-
-      window.filterByTrack = function(btn, track) {
-        activeTrack = track;
-        document.querySelectorAll('.track-filter-btn').forEach(function(b) {
-          b.classList.remove('active-track-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
-          b.classList.add('bg-white', 'border-gray-200');
-        });
-        btn.classList.add('active-track-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
-        btn.classList.remove('bg-white', 'border-gray-200');
         applyFilters();
       };
 
