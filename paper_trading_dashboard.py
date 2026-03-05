@@ -705,7 +705,6 @@ def badge(text, variant="default"):
         "warning": "bg-amber-50 text-amber-700 border border-amber-200",
         "info": "bg-blue-50 text-blue-700 border border-blue-200",
         "bullish": "bg-emerald-50 text-emerald-600",
-        "bearish": "bg-red-50 text-red-600",
     }
     return f'<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {styles.get(variant, styles["default"])}">{_e(text)}</span>'
 
@@ -769,7 +768,7 @@ def render_dashboard():
 
         stock_chips = ""
         for tk, info in sorted(by_stock.items()):
-            dir_badge = badge("↑", "bullish") if info["direction"] == "BULLISH" else badge("↓", "bearish")
+            dir_badge = badge("↑", "bullish")
             cap_color = "bg-blue-50 text-blue-600" if info["cap"] == "LargeCap" else "bg-purple-50 text-purple-600"
             stock_chips += f'''
             <div class="dash-stock-chip rounded-lg bg-white border border-gray-200 p-3 hover:border-blue-300 transition shadow-sm"
@@ -897,7 +896,6 @@ def render_signals():
     <div class="flex gap-3 flex-wrap mb-6">
       {badge(f'{len(trades)} signals', "info")}
       {badge(f'{sum(1 for t in trades if t["direction"]=="BULLISH")} bullish', "bullish")}
-      {badge(f'{sum(1 for t in trades if t["direction"]=="BEARISH")} bearish', "bearish")}
     </div>'''
 
     tables = ""
@@ -911,7 +909,7 @@ def render_signals():
             rows = ""
             for t in hz_trades:
                 upside = ((t["target_price"] - t["entry_price"]) / t["entry_price"] * 100) if t["entry_price"] else 0
-                dir_bdg = badge(t["direction"], "bullish" if t["direction"] == "BULLISH" else "bearish")
+                dir_bdg = badge(t["direction"], "bullish")
                 conf_v = "success" if t.get("confidence") == "HIGH" else "warning" if t.get("confidence") == "MEDIUM" else "danger"
                 patterns = (t.get("patterns") or "").replace(",", ", ")
                 rows += f'''
@@ -987,8 +985,8 @@ def render_positions():
             pct_done = min(100, int(days_held / total_days * 100)) if total_days > 0 else 0
             upside = ((t["target_price"] - t["entry_price"]) / t["entry_price"] * 100) if t["entry_price"] else 0
             downside = ((t["entry_price"] - t["sl_price"]) / t["entry_price"] * 100) if t["entry_price"] else 0
-            dir_cls = "bg-emerald-50 text-emerald-600" if t["direction"] == "BULLISH" else "bg-red-50 text-red-600"
-            dir_arrow = "↑" if t["direction"] == "BULLISH" else "↓"
+            dir_cls = "bg-emerald-50 text-emerald-600"
+            dir_arrow = "↑"
             bar_color = "bg-amber-500" if days_left <= 1 else "bg-blue-500"
             conf_v = "success" if t.get("confidence") == "HIGH" else "warning" if t.get("confidence") == "MEDIUM" else "danger"
             patterns_display = (t.get("patterns") or "").replace(",", " · ")
@@ -1002,8 +1000,6 @@ def render_positions():
 
             if cur_price and entry_p:
                 pnl_pct = (cur_price - entry_p) / entry_p * 100
-                if not is_bull:
-                    pnl_pct = -pnl_pct  # bearish: profit when price drops
                 pnl_sign = "+" if pnl_pct >= 0 else ""
                 pnl_color = "text-emerald-600" if pnl_pct >= 0 else "text-red-600"
                 pnl_bg = "bg-emerald-50" if pnl_pct >= 0 else "bg-red-50"
@@ -1121,12 +1117,12 @@ def render_positions():
 
     # Build horizon filter buttons from actual data
     horizon_counts = {}
-    direction_counts = {"BULLISH": 0, "BEARISH": 0}
+    direction_counts = {"BULLISH": 0}
     for t in trades:
         hz = t.get("horizon_label", "") or ""
         horizon_counts[hz] = horizon_counts.get(hz, 0) + 1
         d = t.get("direction", "")
-        if d in direction_counts:
+        if d == "BULLISH":
             direction_counts[d] += 1
 
     # Sort horizons by horizon_days
@@ -1138,7 +1134,6 @@ def render_positions():
         hz_buttons += f'<button onclick="filterPositions(this, \'{_e(hz)}\')" class="hz-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700 transition-all" data-hz="{_e(hz)}">{_e(hz)} <span class="text-gray-400 ml-1">({cnt})</span></button>'
 
     bull_cnt = direction_counts["BULLISH"]
-    bear_cnt = direction_counts["BEARISH"]
 
     # Collect unique expiry dates with counts, sorted chronologically
     expiry_counts = {}
@@ -1173,12 +1168,7 @@ def render_positions():
         <button onclick="filterPositions(this, 'ALL')" class="hz-filter-btn active-filter px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-300 bg-blue-50 text-blue-700 transition-all" data-hz="ALL">All <span class="text-blue-400 ml-1">({len(trades)})</span></button>
         {hz_buttons}
       </div>
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider mr-1 w-16">Direction:</span>
-        <button onclick="filterByDirection(this, 'ALL')" class="dir-filter-btn active-dir-filter px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-300 bg-blue-50 text-blue-700 transition-all" data-dir="ALL">All</button>
-        <button onclick="filterByDirection(this, 'BULLISH')" class="dir-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-emerald-600 hover:bg-emerald-50 hover:border-emerald-300 transition-all" data-dir="BULLISH">↑ Bullish ({bull_cnt})</button>
-        <button onclick="filterByDirection(this, 'BEARISH')" class="dir-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-red-600 hover:bg-red-50 hover:border-red-300 transition-all" data-dir="BEARISH">↓ Bearish ({bear_cnt})</button>
-      </div>
+
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider mr-1 w-16">Expiry:</span>
         <button onclick="filterByExpiry(this, 'ALL')" class="exp-filter-btn active-exp-filter px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-300 bg-blue-50 text-blue-700 transition-all" data-exp="ALL">All</button>
@@ -1228,17 +1218,6 @@ def render_positions():
         });
         btn.classList.add('active-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
         btn.classList.remove('bg-white', 'text-gray-600', 'border-gray-200');
-        applyFilters();
-      };
-
-      window.filterByDirection = function(btn, dir) {
-        activeDir = dir;
-        document.querySelectorAll('.dir-filter-btn').forEach(function(b) {
-          b.classList.remove('active-dir-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
-          b.classList.add('bg-white', 'border-gray-200');
-        });
-        btn.classList.add('active-dir-filter', 'bg-blue-50', 'border-blue-300', 'text-blue-700');
-        btn.classList.remove('bg-white', 'border-gray-200');
         applyFilters();
       };
 
@@ -1379,7 +1358,7 @@ def render_history():
         for t in trades:
             ret = t.get("actual_return_pct", 0) or 0
             ret_cls = "text-emerald-600" if ret >= 0 else "text-red-600"
-            dir_bdg = badge(t["direction"][0] if t.get("direction") else "?", "bullish" if t.get("direction") == "BULLISH" else "bearish")
+            dir_bdg = badge(t["direction"][0] if t.get("direction") else "?", "bullish")
             rows += f'''
             <tr class="hover:bg-blue-50/50 transition border-b border-gray-100">
               <td class="px-4 py-3">{status_badge(t["status"])}</td>
@@ -2515,8 +2494,8 @@ def render_engine(action_result=None):
         if signals:
             sig_rows = ""
             for i, sig in enumerate(signals):
-                dir_color = "emerald" if sig.get("direction") == "BULLISH" else "red"
-                dir_icon = "&#9650;" if sig.get("direction") == "BULLISH" else "&#9660;"
+                dir_color = "emerald"
+                dir_icon = "&#9650;"
                 wr = sig.get("predicted_win_rate", 0)
                 wr_color = "emerald" if wr >= 60 else ("amber" if wr >= 55 else "red")
                 rr = sig.get("rr_ratio", 0)
@@ -2621,8 +2600,8 @@ def render_engine(action_result=None):
         if skipped:
             skip_rows = ""
             for sig in skipped:
-                dir_color = "emerald" if sig.get("direction") == "BULLISH" else "red"
-                dir_icon = "&#9650;" if sig.get("direction") == "BULLISH" else "&#9660;"
+                dir_color = "emerald"
+                dir_icon = "&#9650;"
                 reasons = "; ".join(sig.get("skip_reasons", []))
                 skip_rows += f'''
                 <tr class="hover:bg-red-50/30 border-b border-gray-100 text-gray-400">
