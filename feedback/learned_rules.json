@@ -20,7 +20,7 @@
         "vol_unconfirmed_wr": 23.6,
         "vol_unconfirmed_n": 55
       },
-      "updated_at": "2026-03-05T14:51:08.283537"
+      "updated_at": "2026-03-05T16:01:27.392013"
     },
     "rising_three_methods": {
       "actual_win_rate": 25.0,
@@ -32,7 +32,7 @@
         "vol_unconfirmed_wr": 25.0,
         "vol_unconfirmed_n": 8
       },
-      "updated_at": "2026-03-05T14:51:08.283537"
+      "updated_at": "2026-03-05T16:01:27.392013"
     },
     "three_black_crows": {
       "actual_win_rate": 30.0,
@@ -46,7 +46,7 @@
         "vol_unconfirmed_wr": 14.3,
         "vol_unconfirmed_n": 7
       },
-      "updated_at": "2026-03-05T14:51:08.283537"
+      "updated_at": "2026-03-05T16:01:27.392013"
     },
     "homing_pigeon": {
       "actual_win_rate": 10.0,
@@ -58,7 +58,7 @@
         "vol_unconfirmed_wr": 10.0,
         "vol_unconfirmed_n": 20
       },
-      "updated_at": "2026-03-05T14:51:08.283537"
+      "updated_at": "2026-03-05T16:01:27.392013"
     },
     "bullish_kicker": {
       "actual_win_rate": 21.428571428571427,
@@ -72,7 +72,7 @@
         "vol_unconfirmed_wr": 19.2,
         "vol_unconfirmed_n": 26
       },
-      "updated_at": "2026-03-05T14:51:08.283537"
+      "updated_at": "2026-03-05T16:01:27.392013"
     },
     "hammer": {
       "actual_win_rate": 16.666666666666664,
@@ -84,19 +84,19 @@
         "vol_unconfirmed_wr": 16.7,
         "vol_unconfirmed_n": 18
       },
-      "updated_at": "2026-03-05T14:51:08.283537"
+      "updated_at": "2026-03-05T16:01:27.392013"
     },
     "harami_cross": {
-      "actual_win_rate": 15.0,
-      "decay_weighted_win_rate": 15.02,
-      "avg_return": -1.46,
-      "total_trades": 20,
-      "note": "Underperforming \u2014 15% win rate.",
+      "actual_win_rate": 14.285714285714285,
+      "decay_weighted_win_rate": 14.25,
+      "avg_return": -1.72,
+      "total_trades": 21,
+      "note": "Underperforming \u2014 14% win rate.",
       "volume_breakdown": {
-        "vol_unconfirmed_wr": 15.0,
-        "vol_unconfirmed_n": 20
+        "vol_unconfirmed_wr": 14.3,
+        "vol_unconfirmed_n": 21
       },
-      "updated_at": "2026-03-05T14:51:08.283537"
+      "updated_at": "2026-03-05T16:01:27.392013"
     },
     "three_inside_down": {
       "actual_win_rate": 0.0,
@@ -111,7 +111,7 @@
       "updated_at": "2026-03-05T12:54:51.514284"
     }
   },
-  "updated_at": "2026-03-05T14:51:08.284538",
+  "updated_at": "2026-03-05T16:01:27.393009",
   "regime_adjustments": {
     "belt_hold_bullish__bearish": {
       "win_rate": 27.8,
@@ -144,10 +144,10 @@
       "total_trades": 19
     },
     "harami_cross__bearish": {
-      "win_rate": 23.1,
-      "decay_weighted_win_rate": 23.13,
-      "avg_return": -0.93,
-      "total_trades": 13
+      "win_rate": 21.4,
+      "decay_weighted_win_rate": 21.36,
+      "avg_return": -1.39,
+      "total_trades": 14
     },
     "hammer__bullish": {
       "win_rate": 20.0,
@@ -341,6 +341,12 @@
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": -2.96,
+      "total_trades": 2
+    },
+    "harami_cross__Swing_10d": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": -4.22,
       "total_trades": 2
     }
   },
@@ -582,10 +588,10 @@
       "total_trades": 11
     },
     "harami_cross__it": {
-      "win_rate": 28.6,
-      "decay_weighted_win_rate": 28.64,
-      "avg_return": -0.36,
-      "total_trades": 7
+      "win_rate": 25.0,
+      "decay_weighted_win_rate": 24.81,
+      "avg_return": -1.29,
+      "total_trades": 8
     },
     "hammer__chemicals": {
       "win_rate": 12.5,
@@ -770,10 +776,10 @@
       "reason": "Paper trading WR 21% on 28 trades \u2014 below 45% threshold"
     },
     "harami_cross": {
-      "actual_wr": 15.0,
-      "trades": 20,
+      "actual_wr": 14.3,
+      "trades": 21,
       "action": "reject",
-      "reason": "Paper trading WR 15% on 20 trades \u2014 below 45% threshold"
+      "reason": "Paper trading WR 14% on 21 trades \u2014 below 45% threshold"
     },
     "hammer": {
       "actual_wr": 16.7,
@@ -908,10 +914,10 @@
       "reason": "Sector WR 18% on 11 trades"
     },
     "harami_cross__it": {
-      "actual_wr": 28.6,
-      "trades": 7,
+      "actual_wr": 25.0,
+      "trades": 8,
       "action": "reject",
-      "reason": "Sector WR 29% on 7 trades"
+      "reason": "Sector WR 25% on 8 trades"
     },
     "hammer__chemicals": {
       "actual_wr": 12.5,
