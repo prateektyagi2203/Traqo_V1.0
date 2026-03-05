@@ -1803,10 +1803,96 @@ def _feedback_csv_bytes():
     return buf.getvalue().encode("utf-8")
 
 
+def _get_shadow_trade_stats():
+    """Compute shadow trade validation statistics."""
+    db = get_db()
+    
+    # Shadow trade stats
+    sh_total = db.execute("SELECT COUNT(*) FROM shadow_trades").fetchone()[0]
+    sh_closed = db.execute("SELECT COUNT(*) FROM shadow_trades WHERE status NOT IN ('SHADOW_OPEN')").fetchone()[0]
+    sh_wins = db.execute("SELECT COUNT(*) FROM shadow_trades WHERE status IN ('SHADOW_WON','SHADOW_EXPIRED_WIN')").fetchone()[0]
+    sh_losses = db.execute("SELECT COUNT(*) FROM shadow_trades WHERE status IN ('SHADOW_LOST','SHADOW_EXPIRED_LOSS')").fetchone()[0]
+    
+    # Real trade stats
+    real_total = db.execute("SELECT COUNT(*) FROM trades WHERE status NOT IN ('OPEN','CANCELLED')").fetchone()[0]
+    real_wins = db.execute("SELECT COUNT(*) FROM trades WHERE status IN ('WON','EXPIRED_WIN')").fetchone()[0]
+    real_losses = db.execute("SELECT COUNT(*) FROM trades WHERE status IN ('LOST','EXPIRED_LOSS')").fetchone()[0]
+    
+    # Win rates
+    sh_wr = (sh_wins / sh_closed * 100) if sh_closed > 0 else 0
+    real_wr = (real_wins / real_total * 100) if real_total > 0 else 0
+    gap = real_wr - sh_wr  # positive = real outperforms shadow
+    
+    # Per-horizon comparison
+    horizon_comp = []
+    horizons = ['BTST_1d', 'Swing_3d', 'Swing_5d', 'Swing_10d']
+    for hz in horizons:
+        sh_hz = db.execute("SELECT COUNT(*) FROM shadow_trades WHERE status!='SHADOW_OPEN' AND horizon_label=?", (hz,)).fetchone()[0]
+        sh_hz_wins = db.execute("SELECT COUNT(*) FROM shadow_trades WHERE status IN ('SHADOW_WON','SHADOW_EXPIRED_WIN') AND horizon_label=?", (hz,)).fetchone()[0]
+        
+        real_hz = db.execute("SELECT COUNT(*) FROM trades WHERE status NOT IN ('OPEN','CANCELLED') AND horizon_label=?", (hz,)).fetchone()[0]
+        real_hz_wins = db.execute("SELECT COUNT(*) FROM trades WHERE status IN ('WON','EXPIRED_WIN') AND horizon_label=?", (hz,)).fetchone()[0]
+        
+        sh_hz_wr = (sh_hz_wins / sh_hz * 100) if sh_hz > 0 else None
+        real_hz_wr = (real_hz_wins / real_hz * 100) if real_hz > 0 else None
+        
+        horizon_comp.append({
+            'horizon': hz,
+            'shadow_count': sh_hz,
+            'shadow_wr': sh_hz_wr,
+            'real_count': real_hz,
+            'real_wr': real_hz_wr,
+        })
+    
+    # Pattern comparison
+    pattern_comp = []
+    patterns_in_shadow = db.execute("SELECT DISTINCT patterns FROM shadow_trades WHERE status!='SHADOW_OPEN'").fetchall()
+    
+    for row in patterns_in_shadow[:10]:  # Top 10 patterns
+        pat = row[0] if isinstance(row[0], str) else (row[0][0] if row[0] else '')
+        if not pat:
+            continue
+        
+        sh_pat = db.execute("SELECT COUNT(*) FROM shadow_trades WHERE status!='SHADOW_OPEN' AND patterns LIKE ?", (f'%{pat}%',)).fetchone()[0]
+        sh_pat_wins = db.execute("SELECT COUNT(*) FROM shadow_trades WHERE status IN ('SHADOW_WON','SHADOW_EXPIRED_WIN') AND patterns LIKE ?", (f'%{pat}%',)).fetchone()[0]
+        
+        real_pat = db.execute("SELECT COUNT(*) FROM trades WHERE status NOT IN ('OPEN','CANCELLED') AND patterns LIKE ?", (f'%{pat}%',)).fetchone()[0]
+        real_pat_wins = db.execute("SELECT COUNT(*) FROM trades WHERE status IN ('WON','EXPIRED_WIN') AND patterns LIKE ?", (f'%{pat}%',)).fetchone()[0]
+        
+        sh_pat_wr = (sh_pat_wins / sh_pat * 100) if sh_pat > 0 else None
+        real_pat_wr = (real_pat_wins / real_pat * 100) if real_pat > 0 else None
+        
+        if sh_pat > 0 or real_pat > 0:
+            pattern_comp.append({
+                'pattern': pat,
+                'shadow_wr': sh_pat_wr,
+                'real_wr': real_pat_wr,
+            })
+    
+    db.close()
+    
+    return {
+        'shadow_total': sh_total,
+        'shadow_closed': sh_closed,
+        'shadow_wins': sh_wins,
+        'shadow_losses': sh_losses,
+        'shadow_wr': sh_wr,
+        'real_total': real_total,
+        'real_wins': real_wins,
+        'real_losses': real_losses,
+        'real_wr': real_wr,
+        'gap': gap,  # positive = filtering working
+        'efficiency': (real_wr / sh_wr) if sh_wr > 0 else 0,
+        'horizon_comp': horizon_comp,
+        'pattern_comp': pattern_comp,
+    }
+
+
 def render_feedback():
     """Render the Feedback Loop page — RAG learning visibility."""
     entries = _load_feedback_log()
     rules = _load_learned_rules()
+    shadow_stats = _get_shadow_trade_stats()
 
     # ---- Summary stats ----
     total_entries = len(entries)
@@ -1848,6 +1934,80 @@ def render_feedback():
       {stat_card("Regime Rules", len(regime_adj), "", "cyan")}
       {stat_card("Learned Rules", len(active_rules), f"Updated: {_e(updated_at)}", "green")}
       {stat_card("Cross-Dim Keys", f"{len(triple_adj)} + {len(sector_adj)}", "triple + sector", "indigo")}
+    </div>'''
+
+    # ---- Shadow Trade Validation Section ----
+    sh = shadow_stats
+    sh_quality = "✓ Working" if sh['gap'] >= 10 else ("⚠ Moderate" if sh['gap'] >= 5 else "⚠ Weak")
+    sh_quality_color = "emerald" if sh['gap'] >= 10 else ("amber" if sh['gap'] >= 5 else "red")
+    
+    # Horizon comparison rows
+    hz_rows = ""
+    for hz_data in sh['horizon_comp']:
+        hz = hz_data['horizon']
+        sh_wr = hz_data['shadow_wr']
+        real_wr = hz_data['real_wr']
+        
+        if sh_wr is not None and real_wr is not None:
+            sh_cls = "text-emerald-600" if sh_wr >= 50 else "text-red-600"
+            real_cls = "text-emerald-600" if real_wr >= 50 else "text-red-600"
+            hz_rows += f'''
+            <tr class="hover:bg-blue-50/50 border-b border-gray-100">
+              <td class="px-4 py-2 text-xs font-medium text-gray-800">{_e(hz)}</td>
+              <td class="px-4 py-2 text-right text-xs font-mono {sh_cls}">{sh_wr:.1f}%</td>
+              <td class="px-4 py-2 text-right text-xs text-gray-600">{hz_data['shadow_count']}</td>
+              <td class="px-4 py-2 text-right text-xs font-mono {real_cls}">{real_wr:.1f}%</td>
+              <td class="px-4 py-2 text-right text-xs text-gray-600">{hz_data['real_count']}</td>
+              <td class="px-4 py-2 text-right text-xs font-mono {('text-emerald-600' if (real_wr - sh_wr) > 0 else 'text-red-600')}">{(real_wr - sh_wr):+.1f}pp</td>
+            </tr>'''
+        elif sh_wr is not None:
+            sh_cls = "text-emerald-600" if sh_wr >= 50 else "text-red-600"
+            hz_rows += f'''
+            <tr class="hover:bg-blue-50/50 border-b border-gray-100">
+              <td class="px-4 py-2 text-xs font-medium text-gray-800">{_e(hz)}</td>
+              <td class="px-4 py-2 text-right text-xs font-mono {sh_cls}">{sh_wr:.1f}%</td>
+              <td class="px-4 py-2 text-right text-xs text-gray-600">{hz_data['shadow_count']}</td>
+              <td class="px-4 py-2 text-right text-xs text-gray-400">—</td>
+              <td class="px-4 py-2 text-right text-xs text-gray-600">0</td>
+              <td class="px-4 py-2 text-right text-xs text-gray-400">N/A</td>
+            </tr>'''
+    
+    shadow_section = f'''
+    <div class="glass rounded-xl p-6 mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h3 class="text-lg font-semibold text-gray-800">Shadow Trade Validation</h3>
+          <p class="text-xs text-gray-500 mt-1">Filter quality assessment: Real trades vs Filtered signal performance</p>
+        </div>
+      </div>
+      
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        {stat_card("Shadow Win Rate", f"{sh['shadow_wr']:.1f}%", f"{sh['shadow_closed']} closed", "amber")}
+        {stat_card("Real Win Rate", f"{sh['real_wr']:.1f}%", f"{sh['real_total']} closed", "green")}
+        {stat_card("Filter Gap", f"{sh['gap']:+.1f}pp", "Real outperforms", "emerald" if sh['gap'] > 0 else "red")}
+        {stat_card("Filter Efficiency", f"{sh['efficiency']:.2f}x", "Real / Shadow ratio", sh_quality_color)}
+      </div>
+      
+      <div class="mb-4">
+        <h4 class="text-sm font-semibold text-gray-700 mb-2">Interpretation</h4>
+        <div class="text-sm text-gray-600 bg-{sh_quality_color}-50 border border-{sh_quality_color}-200 rounded-lg p-4">
+          {sh_quality}: Filtered signals underperform real trades by <span class="font-semibold">{sh['gap']:.1f} percentage points</span>.
+          Your filters are <span class="font-semibold">{sh['efficiency']:.2f}x more effective</span> than random selections.
+          {'✓ Filters are working as intended.' if sh['gap'] >= 10 else '⚠ Monitor filter effectiveness.' if sh['gap'] >= 5 else '⚠ Consider loosening filters.'}
+        </div>
+      </div>
+      
+      <h4 class="text-sm font-semibold text-gray-700 mb-3">Performance by Horizon</h4>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm"><thead><tr class="border-b border-gray-200">
+          <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Horizon</th>
+          <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Shadow WR</th>
+          <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Shadow N</th>
+          <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Real WR</th>
+          <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Real N</th>
+          <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Gap</th>
+        </tr></thead><tbody>{hz_rows}</tbody></table>
+      </div>
     </div>'''
 
     # ---- Section 2: Pattern Adjustments ----
@@ -2104,6 +2264,7 @@ def render_feedback():
       </div>
     </div>
     {cards}
+    {shadow_section}
     {pat_section}
     {filter_section}
     {cross_dim}
