@@ -34,7 +34,36 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
+
+# Try to import yfinance with error handling and debugging
+try:
+    import yfinance as yf
+    print("yfinance imported successfully")
+except ImportError as e:
+    print(f"yfinance import failed: {e}")
+    # Try to help import path
+    import sys
+    import os
+    print(f"Python executable: {sys.executable}")
+    print(f"Current working directory: {os.getcwd()}")
+    print("Python path:")
+    for p in sys.path:
+        print(f"  {p}")
+    
+    # Try to import from virtual environment
+    venv_site_packages = r"C:\Users\tyagipra\Coding\Nifty_Data\.venv\Lib\site-packages"
+    if os.path.exists(venv_site_packages) and venv_site_packages not in sys.path:
+        sys.path.insert(0, venv_site_packages)
+        print(f"Added venv site-packages to path: {venv_site_packages}")
+        try:
+            import yfinance as yf
+            print("yfinance imported successfully after adding venv to path")
+        except ImportError as e2:
+            print(f"yfinance import still failed: {e2}")
+            raise e2
+    else:
+        raise e
+
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -46,6 +75,7 @@ from trading_config import (
     STRUCTURAL_SL_PATTERNS, STRUCTURAL_SL_MULTIPLIER, STANDARD_SL_MULTIPLIER,
     SL_FLOOR_PCT, SL_CAP_PCT,
     INSTRUMENT_SECTORS,
+    ALLOWED_DIRECTIONS,
     is_tradeable_pattern,
 )
 
@@ -580,14 +610,25 @@ class PaperTradeDB:
         return [dict(r) for r in cur.fetchall()]
 
     def get_closed_trades(self, since: str = None) -> List[dict]:
+        """Return trades with final outcomes (WON/LOST/EXPIRED). Excludes OPEN and CANCELLED."""
         if since:
             cur = self.conn.execute(
-                "SELECT * FROM trades WHERE status!='OPEN' AND exit_date>=? ORDER BY exit_date",
+                "SELECT * FROM trades WHERE status NOT IN ('OPEN','CANCELLED') AND exit_date>=? ORDER BY exit_date",
                 (since,))
         else:
             cur = self.conn.execute(
-                "SELECT * FROM trades WHERE status!='OPEN' ORDER BY exit_date")
+                "SELECT * FROM trades WHERE status NOT IN ('OPEN','CANCELLED') ORDER BY exit_date")
         return [dict(r) for r in cur.fetchall()]
+
+    def purge_trades(self, trade_ids: List[int]) -> int:
+        """Permanently delete trades and their position_monitoring entries from the database."""
+        if not trade_ids:
+            return 0
+        placeholders = ",".join("?" * len(trade_ids))
+        self.conn.execute(f"DELETE FROM position_monitoring WHERE trade_id IN ({placeholders})", trade_ids)
+        self.conn.execute(f"DELETE FROM trades WHERE id IN ({placeholders})", trade_ids)
+        self.conn.commit()
+        return len(trade_ids)
 
     def get_all_trades(self) -> List[dict]:
         cur = self.conn.execute("SELECT * FROM trades ORDER BY entry_date DESC, ticker")
@@ -996,6 +1037,11 @@ class PaperTrader:
                     skip_reasons = []
                     h_label = HORIZON_CONFIG[days]["label"]
 
+                    # Direction filter: cash equity cannot hold short overnight
+                    hz_direction = hz_data.get("direction", result["direction"])
+                    if hz_direction not in ALLOWED_DIRECTIONS:
+                        skip_reasons.append(f"Bearish signal — not tradeable in cash equity")
+
                     # Horizon-specific WR override
                     base_wr = result.get("win_rate", 0)
                     hz_wr, hz_src = self.sp.get_horizon_feedback(
@@ -1218,6 +1264,11 @@ class PaperTrader:
                     # Check filters and record skip reason
                     skip_reasons = []
 
+                    # Direction filter: cash equity cannot hold short overnight
+                    hz_direction = hz_data.get("direction", result["direction"])
+                    if hz_direction not in ALLOWED_DIRECTIONS:
+                        skip_reasons.append(f"Bearish signal — not tradeable in cash equity")
+
                     # Feedback-based filter adjustments — horizon-aware
                     conf = result.get("confidence", "LOW")
                     rr = hz_data.get("rr_ratio", 0)
@@ -1291,6 +1342,8 @@ class PaperTrader:
                     cat = "Feedback Penalty"
                 elif "Horizon penalty" in r:
                     cat = "Horizon Penalty"
+                elif "Bearish signal" in r:
+                    cat = "Bearish Signal"
                 else:
                     cat = r
                 reason_counts[cat] = reason_counts.get(cat, 0) + 1
@@ -1840,6 +1893,89 @@ class PaperTrader:
     # ----------------------------------------------------------
     # RAG FEEDBACK
     # ----------------------------------------------------------
+    @staticmethod
+    def regenerate_learned_rules():
+        """Rebuild learned_rules.json from current feedback_log.json.
+
+        Call this after ANY trade deletion/cancellation to ensure
+        penalties, boosts, and adjustments don't reference purged trades.
+        """
+        import importlib
+        fb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback", "feedback_log.json")
+        lr_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback", "learned_rules.json")
+        if not os.path.exists(fb_path):
+            # No feedback log → wipe learned rules
+            if os.path.exists(lr_path):
+                with open(lr_path, "w", encoding="utf-8") as f:
+                    json.dump({"rules": [], "pattern_adjustments": {}, "updated_at": datetime.now().isoformat()}, f, indent=2)
+            log.info("Learned rules reset (no feedback entries)")
+            return
+        # Trigger a full rebuild via feed_outcomes_to_rag's internal _update_learnings
+        # by instantiating a temporary engine and calling it
+        try:
+            with open(fb_path, "r", encoding="utf-8") as f:
+                feedback = json.load(f)
+            if len(feedback) < 3:
+                # Too few entries → reset learned rules
+                with open(lr_path, "w", encoding="utf-8") as f:
+                    json.dump({"rules": [], "pattern_adjustments": {}, "updated_at": datetime.now().isoformat()}, f, indent=2)
+                log.info(f"Learned rules reset ({len(feedback)} feedback entries — too few)")
+            else:
+                log.info(f"Regenerating learned rules from {len(feedback)} feedback entries...")
+                # We call feed_outcomes_to_rag which always regenerates learnings
+                engine = PaperTrader()
+                engine.feed_outcomes_to_rag()
+                log.info("Learned rules regenerated successfully")
+        except Exception as e:
+            log.error(f"Failed to regenerate learned rules: {e}")
+
+    @staticmethod
+    def purge_trades_complete(trade_ids: List[int]):
+        """Full purge: delete trades from DB, feedback_log, and regenerate learned_rules.
+
+        This is the ONE function to call when removing trades from the system.
+        It ensures no trace remains in DB, RAG feedback, or learned penalties.
+        """
+        if not trade_ids:
+            return {"deleted": 0, "feedback_removed": 0}
+
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        db_path = os.path.join(script_dir, "paper_trades", "paper_trades.db")
+        fb_path = os.path.join(script_dir, "feedback", "feedback_log.json")
+
+        # 1. Delete from database (trades + position_monitoring)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        placeholders = ",".join("?" * len(trade_ids))
+        conn.execute(f"DELETE FROM position_monitoring WHERE trade_id IN ({placeholders})", trade_ids)
+        conn.execute(f"DELETE FROM trades WHERE id IN ({placeholders})", trade_ids)
+        conn.commit()
+        conn.close()
+        log.info(f"Purged {len(trade_ids)} trade(s) from database")
+
+        # 2. Remove from feedback_log.json
+        fb_removed = 0
+        if os.path.exists(fb_path):
+            try:
+                with open(fb_path, "r", encoding="utf-8") as f:
+                    feedback = json.load(f)
+                pids = {f"paper_{tid}" for tid in trade_ids}
+                before = len(feedback)
+                feedback = [e for e in feedback if e.get("trade_id") not in pids]
+                fb_removed = before - len(feedback)
+                with open(fb_path, "w", encoding="utf-8") as f:
+                    json.dump(feedback, f, indent=2, default=str)
+                if fb_removed:
+                    log.info(f"Removed {fb_removed} entries from feedback_log.json")
+            except Exception as e:
+                log.error(f"Failed to clean feedback_log.json: {e}")
+
+        # 3. Regenerate learned_rules.json from remaining feedback
+        PaperTrader.regenerate_learned_rules()
+
+        return {"deleted": len(trade_ids), "feedback_removed": fb_removed}
+
+    # ----------------------------------------------------------
     def feed_outcomes_to_rag(self):
         """Push closed trade outcomes into RAG feedback system."""
         FEEDBACK_FILE = "feedback/feedback_log.json"
@@ -2306,7 +2442,43 @@ if __name__ == "__main__":
         engine.feed_outcomes_to_rag()
     elif cmd == "stats":
         print(json.dumps(engine.db.get_stats(), indent=2))
+    elif cmd == "purge":
+        # purge trade_id1,trade_id2,...
+        if len(sys.argv) > 2:
+            ids = [int(x) for x in sys.argv[2].split(",") if x.strip().isdigit()]
+            if ids:
+                result = PaperTrader.purge_trades_complete(ids)
+                print(f"Purged {result['deleted']} trade(s), {result['feedback_removed']} feedback entries removed")
+                print("Learned rules regenerated from remaining data")
+            else:
+                print("Usage: purge 123,456,789")
+        else:
+            print("Usage: python paper_trader.py purge <trade_id1,trade_id2,...>")
+    elif cmd == "purge_date":
+        # purge all closed trades on a date range: purge_date 2026-02-28 2026-03-05
+        if len(sys.argv) >= 3:
+            from_date = sys.argv[2]
+            to_date = sys.argv[3] if len(sys.argv) > 3 else from_date
+            conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "paper_trades", "paper_trades.db"))
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, ticker, status, exit_date FROM trades WHERE status NOT IN ('OPEN') AND exit_date >= ? AND exit_date <= ?",
+                (from_date, to_date + "T23:59:59")
+            ).fetchall()
+            conn.close()
+            if rows:
+                trade_ids = [r["id"] for r in rows]
+                print(f"Found {len(rows)} trade(s) to purge:")
+                for r in rows:
+                    print(f"  ID {r['id']}: {r['ticker']} - {r['status']} - exit: {r['exit_date']}")
+                result = PaperTrader.purge_trades_complete(trade_ids)
+                print(f"\nPurged {result['deleted']} trade(s), {result['feedback_removed']} feedback entries removed")
+                print("Learned rules regenerated from remaining data")
+            else:
+                print(f"No closed trades found between {from_date} and {to_date}")
+        else:
+            print("Usage: python paper_trader.py purge_date 2026-02-28 [2026-03-05]")
     elif cmd == "run":
         engine.run()
     else:
-        print(f"Unknown: {cmd}. Use: run|scan|scan_preview|approve|discard|monitor|risk_check|risk_exit|feedback|stats")
+        print(f"Unknown: {cmd}. Use: run|scan|scan_preview|approve|discard|monitor|risk_check|risk_exit|feedback|stats|purge|purge_date")

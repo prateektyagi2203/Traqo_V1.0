@@ -9,18 +9,18 @@
   ],
   "pattern_adjustments": {
     "belt_hold_bullish": {
-      "actual_win_rate": 24.615384615384617,
-      "decay_weighted_win_rate": 24.56,
-      "avg_return": -0.89,
-      "total_trades": 65,
-      "note": "Underperforming \u2014 25% win rate.",
+      "actual_win_rate": 23.728813559322035,
+      "decay_weighted_win_rate": 23.65,
+      "avg_return": -0.96,
+      "total_trades": 59,
+      "note": "Underperforming \u2014 24% win rate.",
       "volume_breakdown": {
         "vol_confirmed_wr": 25.0,
         "vol_confirmed_n": 4,
-        "vol_unconfirmed_wr": 24.6,
-        "vol_unconfirmed_n": 61
+        "vol_unconfirmed_wr": 23.6,
+        "vol_unconfirmed_n": 55
       },
-      "updated_at": "2026-03-01T16:04:21.870086"
+      "updated_at": "2026-03-05T14:51:08.283537"
     },
     "rising_three_methods": {
       "actual_win_rate": 25.0,
@@ -32,7 +32,7 @@
         "vol_unconfirmed_wr": 25.0,
         "vol_unconfirmed_n": 8
       },
-      "updated_at": "2026-03-01T16:04:21.871084"
+      "updated_at": "2026-03-05T14:51:08.283537"
     },
     "three_black_crows": {
       "actual_win_rate": 30.0,
@@ -46,7 +46,7 @@
         "vol_unconfirmed_wr": 14.3,
         "vol_unconfirmed_n": 7
       },
-      "updated_at": "2026-03-01T16:04:21.871084"
+      "updated_at": "2026-03-05T14:51:08.283537"
     },
     "homing_pigeon": {
       "actual_win_rate": 10.0,
@@ -58,21 +58,21 @@
         "vol_unconfirmed_wr": 10.0,
         "vol_unconfirmed_n": 20
       },
-      "updated_at": "2026-03-01T16:04:21.871084"
+      "updated_at": "2026-03-05T14:51:08.283537"
     },
     "bullish_kicker": {
-      "actual_win_rate": 24.242424242424242,
-      "decay_weighted_win_rate": 24.23,
-      "avg_return": -0.4,
-      "total_trades": 33,
-      "note": "Underperforming \u2014 24% win rate.",
+      "actual_win_rate": 21.428571428571427,
+      "decay_weighted_win_rate": 21.37,
+      "avg_return": -1.07,
+      "total_trades": 28,
+      "note": "Underperforming \u2014 21% win rate.",
       "volume_breakdown": {
         "vol_confirmed_wr": 50.0,
         "vol_confirmed_n": 2,
-        "vol_unconfirmed_wr": 22.6,
-        "vol_unconfirmed_n": 31
+        "vol_unconfirmed_wr": 19.2,
+        "vol_unconfirmed_n": 26
       },
-      "updated_at": "2026-03-01T16:04:21.871084"
+      "updated_at": "2026-03-05T14:51:08.283537"
     },
     "hammer": {
       "actual_win_rate": 16.666666666666664,
@@ -84,7 +84,7 @@
         "vol_unconfirmed_wr": 16.7,
         "vol_unconfirmed_n": 18
       },
-      "updated_at": "2026-03-01T16:04:21.871084"
+      "updated_at": "2026-03-05T14:51:08.283537"
     },
     "harami_cross": {
       "actual_win_rate": 15.0,
@@ -96,10 +96,22 @@
         "vol_unconfirmed_wr": 15.0,
         "vol_unconfirmed_n": 20
       },
-      "updated_at": "2026-03-01T16:04:21.871084"
+      "updated_at": "2026-03-05T14:51:08.283537"
+    },
+    "three_inside_down": {
+      "actual_win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": -2.3,
+      "total_trades": 2,
+      "note": "Underperforming \u2014 0% win rate.",
+      "volume_breakdown": {
+        "vol_unconfirmed_wr": 0.0,
+        "vol_unconfirmed_n": 2
+      },
+      "updated_at": "2026-03-05T12:54:51.514284"
     }
   },
-  "updated_at": "2026-03-01T16:04:21.873090",
+  "updated_at": "2026-03-05T14:51:08.284538",
   "regime_adjustments": {
     "belt_hold_bullish__bearish": {
       "win_rate": 27.8,
@@ -108,10 +120,10 @@
       "total_trades": 36
     },
     "belt_hold_bullish__bullish": {
-      "win_rate": 20.7,
-      "decay_weighted_win_rate": 20.64,
-      "avg_return": -0.99,
-      "total_trades": 29
+      "win_rate": 17.4,
+      "decay_weighted_win_rate": 17.3,
+      "avg_return": -1.15,
+      "total_trades": 23
     },
     "rising_three_methods__bullish": {
       "win_rate": 25.0,
@@ -119,23 +131,23 @@
       "avg_return": -0.46,
       "total_trades": 8
     },
-    "three_black_crows__bearish": {
-      "win_rate": 30.0,
-      "decay_weighted_win_rate": 29.86,
-      "avg_return": -1.14,
-      "total_trades": 10
-    },
     "homing_pigeon__bullish": {
       "win_rate": 6.2,
       "decay_weighted_win_rate": 6.2,
       "avg_return": -2.12,
       "total_trades": 16
     },
-    "bullish_kicker__bullish": {
-      "win_rate": 22.2,
-      "decay_weighted_win_rate": 22.16,
-      "avg_return": -0.43,
-      "total_trades": 9
+    "bullish_kicker__bearish": {
+      "win_rate": 21.1,
+      "decay_weighted_win_rate": 20.99,
+      "avg_return": -1.36,
+      "total_trades": 19
+    },
+    "harami_cross__bearish": {
+      "win_rate": 23.1,
+      "decay_weighted_win_rate": 23.13,
+      "avg_return": -0.93,
+      "total_trades": 13
     },
     "hammer__bullish": {
       "win_rate": 20.0,
@@ -143,23 +155,11 @@
       "avg_return": -0.93,
       "total_trades": 15
     },
-    "homing_pigeon__bearish": {
-      "win_rate": 25.0,
-      "decay_weighted_win_rate": 24.93,
-      "avg_return": 0.23,
-      "total_trades": 4
-    },
-    "bullish_kicker__bearish": {
-      "win_rate": 25.0,
-      "decay_weighted_win_rate": 25.0,
-      "avg_return": -0.39,
-      "total_trades": 24
-    },
-    "harami_cross__bearish": {
-      "win_rate": 23.1,
-      "decay_weighted_win_rate": 23.13,
-      "avg_return": -0.94,
-      "total_trades": 13
+    "bullish_kicker__bullish": {
+      "win_rate": 22.2,
+      "decay_weighted_win_rate": 22.16,
+      "avg_return": -0.43,
+      "total_trades": 9
     },
     "hammer__bearish": {
       "win_rate": 0.0,
@@ -167,19 +167,31 @@
       "avg_return": -2.32,
       "total_trades": 3
     },
+    "three_black_crows__bearish": {
+      "win_rate": 30.0,
+      "decay_weighted_win_rate": 29.86,
+      "avg_return": -1.14,
+      "total_trades": 10
+    },
     "harami_cross__bullish": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": -2.31,
       "total_trades": 7
+    },
+    "homing_pigeon__bearish": {
+      "win_rate": 25.0,
+      "decay_weighted_win_rate": 24.93,
+      "avg_return": 0.23,
+      "total_trades": 4
     }
   },
   "horizon_adjustments": {
     "belt_hold_bullish__BTST_1d": {
-      "win_rate": 60.0,
-      "decay_weighted_win_rate": 59.92,
-      "avg_return": 0.01,
-      "total_trades": 25
+      "win_rate": 59.1,
+      "decay_weighted_win_rate": 58.98,
+      "avg_return": 0.03,
+      "total_trades": 22
     },
     "rising_three_methods__BTST_1d": {
       "win_rate": 33.3,
@@ -187,17 +199,11 @@
       "avg_return": 0.13,
       "total_trades": 3
     },
-    "three_black_crows__BTST_1d": {
-      "win_rate": 66.7,
-      "decay_weighted_win_rate": 66.28,
-      "avg_return": 0.7,
-      "total_trades": 3
-    },
     "belt_hold_bullish__Swing_25d": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": 0,
-      "total_trades": 25
+      "total_trades": 22
     },
     "rising_three_methods__Swing_25d": {
       "win_rate": 0.0,
@@ -210,12 +216,6 @@
       "decay_weighted_win_rate": 11.13,
       "avg_return": -2.03,
       "total_trades": 9
-    },
-    "three_black_crows__Swing_25d": {
-      "win_rate": 0.0,
-      "decay_weighted_win_rate": 0.0,
-      "avg_return": 0,
-      "total_trades": 3
     },
     "homing_pigeon__BTST_1d": {
       "win_rate": 33.3,
@@ -231,15 +231,33 @@
     },
     "bullish_kicker__BTST_1d": {
       "win_rate": 50.0,
-      "decay_weighted_win_rate": 49.83,
-      "avg_return": 0.22,
-      "total_trades": 14
+      "decay_weighted_win_rate": 49.81,
+      "avg_return": -0.01,
+      "total_trades": 12
     },
     "bullish_kicker__Swing_25d": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": 0,
-      "total_trades": 14
+      "total_trades": 12
+    },
+    "bullish_kicker__Swing_3d": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": -3.5,
+      "total_trades": 2
+    },
+    "harami_cross__BTST_1d": {
+      "win_rate": 42.9,
+      "decay_weighted_win_rate": 42.83,
+      "avg_return": -0.2,
+      "total_trades": 7
+    },
+    "harami_cross__Swing_25d": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": 0,
+      "total_trades": 7
     },
     "hammer__BTST_1d": {
       "win_rate": 42.9,
@@ -253,23 +271,11 @@
       "avg_return": 0,
       "total_trades": 7
     },
-    "bullish_kicker__Swing_3d": {
-      "win_rate": 33.3,
-      "decay_weighted_win_rate": 33.46,
-      "avg_return": -0.23,
-      "total_trades": 3
-    },
-    "harami_cross__BTST_1d": {
-      "win_rate": 42.9,
-      "decay_weighted_win_rate": 42.83,
-      "avg_return": -0.2,
-      "total_trades": 7
-    },
-    "harami_cross__Swing_25d": {
+    "three_black_crows__Swing_25d": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": 0,
-      "total_trades": 7
+      "total_trades": 3
     },
     "belt_hold_bullish__Swing_5d": {
       "win_rate": 0.0,
@@ -287,12 +293,6 @@
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": -3.1,
-      "total_trades": 2
-    },
-    "three_black_crows__Swing_3d": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": -0.79,
       "total_trades": 2
     },
     "homing_pigeon__Swing_3d": {
@@ -325,6 +325,18 @@
       "avg_return": -2.61,
       "total_trades": 3
     },
+    "three_black_crows__BTST_1d": {
+      "win_rate": 66.7,
+      "decay_weighted_win_rate": 66.28,
+      "avg_return": 0.7,
+      "total_trades": 3
+    },
+    "three_black_crows__Swing_3d": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.0,
+      "avg_return": -0.79,
+      "total_trades": 2
+    },
     "harami_cross__Swing_5d": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
@@ -340,21 +352,15 @@
       "total_trades": 15
     },
     "belt_hold_bullish__bullish__BTST_1d": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": 0.04,
-      "total_trades": 10
+      "win_rate": 42.9,
+      "decay_weighted_win_rate": 42.74,
+      "avg_return": 0.12,
+      "total_trades": 7
     },
     "rising_three_methods__bullish__BTST_1d": {
       "win_rate": 33.3,
       "decay_weighted_win_rate": 32.95,
       "avg_return": 0.13,
-      "total_trades": 3
-    },
-    "three_black_crows__bearish__BTST_1d": {
-      "win_rate": 66.7,
-      "decay_weighted_win_rate": 66.28,
-      "avg_return": 0.7,
       "total_trades": 3
     },
     "belt_hold_bullish__bearish__Swing_25d": {
@@ -367,7 +373,7 @@
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": 0,
-      "total_trades": 10
+      "total_trades": 7
     },
     "rising_three_methods__bullish__Swing_25d": {
       "win_rate": 0.0,
@@ -381,12 +387,6 @@
       "avg_return": -1.34,
       "total_trades": 4
     },
-    "three_black_crows__bearish__Swing_25d": {
-      "win_rate": 0.0,
-      "decay_weighted_win_rate": 0.0,
-      "avg_return": 0,
-      "total_trades": 3
-    },
     "homing_pigeon__bullish__BTST_1d": {
       "win_rate": 25.0,
       "decay_weighted_win_rate": 24.78,
@@ -399,59 +399,17 @@
       "avg_return": 0,
       "total_trades": 4
     },
-    "bullish_kicker__bullish__BTST_1d": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 49.86,
-      "avg_return": 0.33,
-      "total_trades": 4
-    },
-    "bullish_kicker__bullish__Swing_25d": {
-      "win_rate": 0.0,
-      "decay_weighted_win_rate": 0.0,
-      "avg_return": 0,
-      "total_trades": 4
-    },
-    "hammer__bullish__BTST_1d": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 49.9,
-      "avg_return": 0.1,
-      "total_trades": 6
-    },
-    "hammer__bullish__Swing_25d": {
-      "win_rate": 0.0,
-      "decay_weighted_win_rate": 0.0,
-      "avg_return": 0,
-      "total_trades": 6
-    },
-    "homing_pigeon__bearish__BTST_1d": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 49.71,
-      "avg_return": 0.23,
-      "total_trades": 2
-    },
-    "homing_pigeon__bearish__Swing_25d": {
-      "win_rate": 0.0,
-      "decay_weighted_win_rate": 0.0,
-      "avg_return": 0,
-      "total_trades": 2
-    },
     "bullish_kicker__bearish__BTST_1d": {
       "win_rate": 50.0,
-      "decay_weighted_win_rate": 49.83,
-      "avg_return": 0.17,
-      "total_trades": 10
+      "decay_weighted_win_rate": 49.78,
+      "avg_return": -0.18,
+      "total_trades": 8
     },
     "bullish_kicker__bearish__Swing_25d": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": 0,
-      "total_trades": 10
-    },
-    "bullish_kicker__bearish__Swing_3d": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.29,
-      "avg_return": 1.4,
-      "total_trades": 2
+      "total_trades": 8
     },
     "harami_cross__bearish__BTST_1d": {
       "win_rate": 60.0,
@@ -465,7 +423,43 @@
       "avg_return": 0,
       "total_trades": 5
     },
+    "hammer__bullish__BTST_1d": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 49.9,
+      "avg_return": 0.1,
+      "total_trades": 6
+    },
+    "hammer__bullish__Swing_25d": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": 0,
+      "total_trades": 6
+    },
+    "bullish_kicker__bullish__BTST_1d": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 49.86,
+      "avg_return": 0.33,
+      "total_trades": 4
+    },
+    "bullish_kicker__bullish__Swing_25d": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": 0,
+      "total_trades": 4
+    },
+    "three_black_crows__bearish__Swing_25d": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": 0,
+      "total_trades": 3
+    },
     "harami_cross__bullish__Swing_25d": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": 0,
+      "total_trades": 2
+    },
+    "homing_pigeon__bearish__Swing_25d": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": 0,
@@ -493,12 +487,6 @@
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": -3.1,
-      "total_trades": 2
-    },
-    "three_black_crows__bearish__Swing_3d": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": -0.79,
       "total_trades": 2
     },
     "homing_pigeon__bullish__Swing_3d": {
@@ -531,10 +519,28 @@
       "avg_return": -2.68,
       "total_trades": 2
     },
+    "three_black_crows__bearish__BTST_1d": {
+      "win_rate": 66.7,
+      "decay_weighted_win_rate": 66.28,
+      "avg_return": 0.7,
+      "total_trades": 3
+    },
+    "three_black_crows__bearish__Swing_3d": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.0,
+      "avg_return": -0.79,
+      "total_trades": 2
+    },
     "harami_cross__bullish__BTST_1d": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": -1.48,
+      "total_trades": 2
+    },
+    "homing_pigeon__bearish__BTST_1d": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 49.71,
+      "avg_return": 0.23,
       "total_trades": 2
     }
   },
@@ -544,12 +550,6 @@
       "decay_weighted_win_rate": 32.95,
       "avg_return": -0.11,
       "total_trades": 3
-    },
-    "belt_hold_bullish__it": {
-      "win_rate": 41.2,
-      "decay_weighted_win_rate": 41.16,
-      "avg_return": -0.15,
-      "total_trades": 17
     },
     "homing_pigeon__finance": {
       "win_rate": 10.0,
@@ -575,35 +575,11 @@
       "avg_return": 2.75,
       "total_trades": 4
     },
-    "hammer__pharma": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": 1.52,
-      "total_trades": 2
-    },
-    "hammer__chemicals": {
-      "win_rate": 12.5,
-      "decay_weighted_win_rate": 12.45,
-      "avg_return": -1.39,
-      "total_trades": 8
-    },
-    "homing_pigeon__chemicals": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": 1.32,
-      "total_trades": 2
-    },
     "bullish_kicker__finance": {
-      "win_rate": 28.6,
-      "decay_weighted_win_rate": 28.62,
-      "avg_return": -0.51,
-      "total_trades": 14
-    },
-    "belt_hold_bullish__energy": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": 0.64,
-      "total_trades": 2
+      "win_rate": 18.2,
+      "decay_weighted_win_rate": 18.12,
+      "avg_return": -2.1,
+      "total_trades": 11
     },
     "harami_cross__it": {
       "win_rate": 28.6,
@@ -611,65 +587,23 @@
       "avg_return": -0.36,
       "total_trades": 7
     },
+    "hammer__chemicals": {
+      "win_rate": 12.5,
+      "decay_weighted_win_rate": 12.45,
+      "avg_return": -1.39,
+      "total_trades": 8
+    },
     "bullish_kicker__capital_goods": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
-      "avg_return": -1.55,
-      "total_trades": 5
+      "avg_return": -2.04,
+      "total_trades": 3
     },
     "rising_three_methods__banking": {
       "win_rate": 0.0,
       "decay_weighted_win_rate": 0.0,
       "avg_return": -1.54,
       "total_trades": 5
-    },
-    "belt_hold_bullish__pharma": {
-      "win_rate": 16.7,
-      "decay_weighted_win_rate": 16.57,
-      "avg_return": -2.28,
-      "total_trades": 6
-    },
-    "bullish_kicker__it": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": 0.92,
-      "total_trades": 2
-    },
-    "belt_hold_bullish__chemicals": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": 2.93,
-      "total_trades": 2
-    },
-    "bullish_kicker__chemicals": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": 1.15,
-      "total_trades": 2
-    },
-    "three_black_crows__chemicals": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.0,
-      "avg_return": 0.85,
-      "total_trades": 2
-    },
-    "belt_hold_bullish__metals": {
-      "win_rate": 0.0,
-      "decay_weighted_win_rate": 0.0,
-      "avg_return": -0.77,
-      "total_trades": 2
-    },
-    "belt_hold_bullish__consumer": {
-      "win_rate": 14.3,
-      "decay_weighted_win_rate": 14.38,
-      "avg_return": -1.11,
-      "total_trades": 7
-    },
-    "belt_hold_bullish__realty": {
-      "win_rate": 0.0,
-      "decay_weighted_win_rate": 0.0,
-      "avg_return": -0.27,
-      "total_trades": 2
     },
     "hammer__finance": {
       "win_rate": 0.0,
@@ -682,12 +616,6 @@
       "decay_weighted_win_rate": 0.0,
       "avg_return": -2.32,
       "total_trades": 3
-    },
-    "belt_hold_bullish__banking": {
-      "win_rate": 20.0,
-      "decay_weighted_win_rate": 20.09,
-      "avg_return": -1.21,
-      "total_trades": 5
     },
     "three_black_crows__consumer_tech": {
       "win_rate": 0.0,
@@ -731,37 +659,103 @@
       "avg_return": -2.5,
       "total_trades": 2
     },
-    "harami_cross__chemicals": {
-      "win_rate": 50.0,
-      "decay_weighted_win_rate": 50.29,
-      "avg_return": 1.66,
-      "total_trades": 2
+    "belt_hold_bullish__consumer": {
+      "win_rate": 14.3,
+      "decay_weighted_win_rate": 14.38,
+      "avg_return": -1.11,
+      "total_trades": 7
     },
     "hammer__consumer": {
       "win_rate": 50.0,
       "decay_weighted_win_rate": 50.29,
       "avg_return": 1.7,
       "total_trades": 2
+    },
+    "belt_hold_bullish__pharma": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": -3.16,
+      "total_trades": 4
+    },
+    "belt_hold_bullish__banking": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": -1.82,
+      "total_trades": 3
+    },
+    "belt_hold_bullish__it": {
+      "win_rate": 41.2,
+      "decay_weighted_win_rate": 41.16,
+      "avg_return": -0.15,
+      "total_trades": 17
+    },
+    "hammer__pharma": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.0,
+      "avg_return": 1.52,
+      "total_trades": 2
+    },
+    "homing_pigeon__chemicals": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.0,
+      "avg_return": 1.32,
+      "total_trades": 2
+    },
+    "belt_hold_bullish__energy": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.0,
+      "avg_return": 0.64,
+      "total_trades": 2
+    },
+    "bullish_kicker__it": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.0,
+      "avg_return": 0.92,
+      "total_trades": 2
+    },
+    "belt_hold_bullish__chemicals": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.0,
+      "avg_return": 2.93,
+      "total_trades": 2
+    },
+    "bullish_kicker__chemicals": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.0,
+      "avg_return": 1.15,
+      "total_trades": 2
+    },
+    "three_black_crows__chemicals": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.0,
+      "avg_return": 0.85,
+      "total_trades": 2
+    },
+    "belt_hold_bullish__realty": {
+      "win_rate": 0.0,
+      "decay_weighted_win_rate": 0.0,
+      "avg_return": -0.27,
+      "total_trades": 2
+    },
+    "harami_cross__chemicals": {
+      "win_rate": 50.0,
+      "decay_weighted_win_rate": 50.29,
+      "avg_return": 1.66,
+      "total_trades": 2
     }
   },
   "filter_penalties": {
     "belt_hold_bullish": {
-      "actual_wr": 24.6,
-      "trades": 65,
+      "actual_wr": 23.7,
+      "trades": 59,
       "action": "reject",
-      "reason": "Paper trading WR 25% on 65 trades \u2014 below 45% threshold"
+      "reason": "Paper trading WR 24% on 59 trades \u2014 below 45% threshold"
     },
     "rising_three_methods": {
       "actual_wr": 25.0,
       "trades": 8,
       "action": "reject",
       "reason": "Paper trading WR 25% on 8 trades \u2014 below 45% threshold"
-    },
-    "three_black_crows": {
-      "actual_wr": 30.0,
-      "trades": 10,
-      "action": "reject",
-      "reason": "Paper trading WR 30% on 10 trades \u2014 below 45% threshold"
     },
     "homing_pigeon": {
       "actual_wr": 10.0,
@@ -770,10 +764,16 @@
       "reason": "Paper trading WR 10% on 20 trades \u2014 below 45% threshold"
     },
     "bullish_kicker": {
-      "actual_wr": 24.2,
-      "trades": 33,
+      "actual_wr": 21.4,
+      "trades": 28,
       "action": "reject",
-      "reason": "Paper trading WR 24% on 33 trades \u2014 below 45% threshold"
+      "reason": "Paper trading WR 21% on 28 trades \u2014 below 45% threshold"
+    },
+    "harami_cross": {
+      "actual_wr": 15.0,
+      "trades": 20,
+      "action": "reject",
+      "reason": "Paper trading WR 15% on 20 trades \u2014 below 45% threshold"
     },
     "hammer": {
       "actual_wr": 16.7,
@@ -781,11 +781,11 @@
       "action": "reject",
       "reason": "Paper trading WR 17% on 18 trades \u2014 below 45% threshold"
     },
-    "harami_cross": {
-      "actual_wr": 15.0,
-      "trades": 20,
+    "three_black_crows": {
+      "actual_wr": 30.0,
+      "trades": 10,
       "action": "reject",
-      "reason": "Paper trading WR 15% on 20 trades \u2014 below 45% threshold"
+      "reason": "Paper trading WR 30% on 10 trades \u2014 below 45% threshold"
     }
   },
   "filter_boosts": {},
@@ -798,9 +798,9 @@
     },
     "belt_hold_bullish__Swing_25d": {
       "actual_wr": 0.0,
-      "trades": 25,
+      "trades": 22,
       "action": "reject",
-      "reason": "Horizon WR 0% on 25 trades"
+      "reason": "Horizon WR 0% on 22 trades"
     },
     "rising_three_methods__Swing_25d": {
       "actual_wr": 0.0,
@@ -813,12 +813,6 @@
       "trades": 9,
       "action": "reject",
       "reason": "Horizon WR 11% on 9 trades"
-    },
-    "three_black_crows__Swing_25d": {
-      "actual_wr": 0.0,
-      "trades": 3,
-      "action": "reject",
-      "reason": "Horizon WR 0% on 3 trades"
     },
     "homing_pigeon__BTST_1d": {
       "actual_wr": 33.3,
@@ -834,9 +828,15 @@
     },
     "bullish_kicker__Swing_25d": {
       "actual_wr": 0.0,
-      "trades": 14,
+      "trades": 12,
       "action": "reject",
-      "reason": "Horizon WR 0% on 14 trades"
+      "reason": "Horizon WR 0% on 12 trades"
+    },
+    "harami_cross__Swing_25d": {
+      "actual_wr": 0.0,
+      "trades": 7,
+      "action": "reject",
+      "reason": "Horizon WR 0% on 7 trades"
     },
     "hammer__Swing_25d": {
       "actual_wr": 0.0,
@@ -844,17 +844,11 @@
       "action": "reject",
       "reason": "Horizon WR 0% on 7 trades"
     },
-    "bullish_kicker__Swing_3d": {
-      "actual_wr": 33.3,
+    "three_black_crows__Swing_25d": {
+      "actual_wr": 0.0,
       "trades": 3,
       "action": "reject",
-      "reason": "Horizon WR 33% on 3 trades"
-    },
-    "harami_cross__Swing_25d": {
-      "actual_wr": 0.0,
-      "trades": 7,
-      "action": "reject",
-      "reason": "Horizon WR 0% on 7 trades"
+      "reason": "Horizon WR 0% on 3 trades"
     },
     "belt_hold_bullish__Swing_5d": {
       "actual_wr": 0.0,
@@ -907,17 +901,11 @@
       "action": "reject",
       "reason": "Sector WR 0% on 5 trades"
     },
-    "hammer__chemicals": {
-      "actual_wr": 12.5,
-      "trades": 8,
-      "action": "reject",
-      "reason": "Sector WR 12% on 8 trades"
-    },
     "bullish_kicker__finance": {
-      "actual_wr": 28.6,
-      "trades": 14,
+      "actual_wr": 18.2,
+      "trades": 11,
       "action": "reject",
-      "reason": "Sector WR 29% on 14 trades"
+      "reason": "Sector WR 18% on 11 trades"
     },
     "harami_cross__it": {
       "actual_wr": 28.6,
@@ -925,29 +913,23 @@
       "action": "reject",
       "reason": "Sector WR 29% on 7 trades"
     },
+    "hammer__chemicals": {
+      "actual_wr": 12.5,
+      "trades": 8,
+      "action": "reject",
+      "reason": "Sector WR 12% on 8 trades"
+    },
     "bullish_kicker__capital_goods": {
       "actual_wr": 0.0,
-      "trades": 5,
+      "trades": 3,
       "action": "reject",
-      "reason": "Sector WR 0% on 5 trades"
+      "reason": "Sector WR 0% on 3 trades"
     },
     "rising_three_methods__banking": {
       "actual_wr": 0.0,
       "trades": 5,
       "action": "reject",
       "reason": "Sector WR 0% on 5 trades"
-    },
-    "belt_hold_bullish__pharma": {
-      "actual_wr": 16.7,
-      "trades": 6,
-      "action": "reject",
-      "reason": "Sector WR 17% on 6 trades"
-    },
-    "belt_hold_bullish__consumer": {
-      "actual_wr": 14.3,
-      "trades": 7,
-      "action": "reject",
-      "reason": "Sector WR 14% on 7 trades"
     },
     "hammer__finance": {
       "actual_wr": 0.0,
@@ -960,12 +942,6 @@
       "trades": 3,
       "action": "reject",
       "reason": "Sector WR 0% on 3 trades"
-    },
-    "belt_hold_bullish__banking": {
-      "actual_wr": 20.0,
-      "trades": 5,
-      "action": "reject",
-      "reason": "Sector WR 20% on 5 trades"
     },
     "three_black_crows__consumer_tech": {
       "actual_wr": 0.0,
@@ -990,6 +966,24 @@
       "trades": 8,
       "action": "reject",
       "reason": "Sector WR 0% on 8 trades"
+    },
+    "belt_hold_bullish__consumer": {
+      "actual_wr": 14.3,
+      "trades": 7,
+      "action": "reject",
+      "reason": "Sector WR 14% on 7 trades"
+    },
+    "belt_hold_bullish__pharma": {
+      "actual_wr": 0.0,
+      "trades": 4,
+      "action": "reject",
+      "reason": "Sector WR 0% on 4 trades"
+    },
+    "belt_hold_bullish__banking": {
+      "actual_wr": 0.0,
+      "trades": 3,
+      "action": "reject",
+      "reason": "Sector WR 0% on 3 trades"
     }
   },
   "sector_filter_boosts": {}

@@ -24,6 +24,15 @@ ALLOWED_TIMEFRAMES = {"daily"}
 
 
 # ============================================================
+# ITEM 1b: DIRECTION FILTER (Cash Equity)
+# ============================================================
+# Indian cash equity segment does NOT allow overnight short positions.
+# BEARISH signals are only actionable intraday or in F&O.
+# Set to {"BULLISH"} for cash-only trading; add "BEARISH" if trading F&O.
+ALLOWED_DIRECTIONS = {"BULLISH"}
+
+
+# ============================================================
 # ITEM 2: INSTRUMENT UNIVERSE
 # ============================================================
 # Only trade instruments with proven OOS edge.

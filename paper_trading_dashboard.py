@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Traqo — RAG Powered Quantitative Candlestick Intelligence by Prateek Tyagi
 ================================================
@@ -25,8 +26,11 @@ from socketserver import ThreadingMixIn
 try:
     import yfinance as yf
     _HAS_YF = True
-except ImportError:
+    print(f"✅ yfinance loaded successfully (v{yf.__version__})")
+except ImportError as e:
     _HAS_YF = False
+    print(f"❌ yfinance import failed: {e}")
+    print("💡 Solution: Ensure virtual environment is active and run: pip install yfinance")
 
 # ---- Market Cap classification (based on index membership) ----
 _LARGECAP_TICKERS = {
@@ -76,8 +80,21 @@ def get_db():
     return conn
 
 
+def _regenerate_learned_rules():
+    """Rebuild learned_rules.json from current feedback_log.json.
+
+    Must be called after ANY trade removal to keep penalties/boosts consistent.
+    """
+    try:
+        sys.path.insert(0, SCRIPT_DIR)
+        from paper_trader import PaperTrader
+        PaperTrader.regenerate_learned_rules()
+    except Exception as e:
+        logger.error(f"Failed to regenerate learned rules: {e}")
+
+
 def cancel_trade(trade_id: int):
-    """Cancel an open trade: mark CANCELLED in DB and remove RAG feedback imprints."""
+    """Cancel an open trade: mark CANCELLED in DB, remove from RAG feedback, rebuild learned rules."""
     # 1) Mark CANCELLED in SQLite
     db_full = os.path.join(SCRIPT_DIR, DB_PATH)
     conn = sqlite3.connect(db_full)
@@ -103,9 +120,12 @@ def cancel_trade(trade_id: int):
         except Exception:
             pass
 
+    # 3) Regenerate learned rules (penalties/boosts) from remaining feedback
+    _regenerate_learned_rules()
+
 
 def cancel_trades_bulk(ids: list):
-    """Cancel multiple open trades and erase their RAG feedback imprints."""
+    """Cancel multiple open trades, erase their RAG feedback imprints, and rebuild learned rules."""
     db_full = os.path.join(SCRIPT_DIR, DB_PATH)
     conn = sqlite3.connect(db_full)
     today = date.today().isoformat()
@@ -130,6 +150,42 @@ def cancel_trades_bulk(ids: list):
                     json.dump(cleaned, f, indent=2, default=str)
         except Exception:
             pass
+
+    # Regenerate learned rules from remaining feedback
+    _regenerate_learned_rules()
+
+
+def purge_closed_trades(trade_ids: list):
+    """Permanently delete closed/expired trades from DB, feedback, and learned rules.
+
+    Unlike cancel (which only works on OPEN trades), this works on any status.
+    Removes all traces: DB rows, position_monitoring, feedback_log, learned_rules.
+    """
+    try:
+        sys.path.insert(0, SCRIPT_DIR)
+        from paper_trader import PaperTrader
+        return PaperTrader.purge_trades_complete(trade_ids)
+    except Exception as e:
+        logger.error(f"Failed to purge trades: {e}")
+        return {"deleted": 0, "feedback_removed": 0, "error": str(e)}
+
+
+def purge_trades_by_date(from_date: str, to_date: str = None):
+    """Permanently delete all non-OPEN trades closed between from_date and to_date."""
+    if not to_date:
+        to_date = from_date
+    db_full = os.path.join(SCRIPT_DIR, DB_PATH)
+    conn = sqlite3.connect(db_full)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT id FROM trades WHERE status NOT IN ('OPEN') AND exit_date >= ? AND exit_date <= ?",
+        (from_date, to_date + "T23:59:59")
+    ).fetchall()
+    conn.close()
+    if rows:
+        trade_ids = [r["id"] for r in rows]
+        return purge_closed_trades(trade_ids)
+    return {"deleted": 0, "feedback_removed": 0}
 
 
 def q_stats():
@@ -285,7 +341,57 @@ def _engine_worker(action, extra_args=None):
     try:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        cmd_list = [sys.executable, os.path.join(SCRIPT_DIR, "paper_trader.py"), action]
+        
+        # Use absolute path to virtual environment Python
+        venv_python = r"C:\Users\tyagipra\Coding\Nifty_Data\.venv\Scripts\python.exe"
+        python_executable = venv_python if os.path.exists(venv_python) else sys.executable
+        
+        # Ensure virtual environment paths are in PATH and PYTHONPATH
+        venv_dir = r"C:\Users\tyagipra\Coding\Nifty_Data\.venv"
+        venv_scripts = os.path.join(venv_dir, "Scripts")
+        venv_lib = os.path.join(venv_dir, "Lib", "site-packages")
+        
+        # Update PATH to include venv scripts first
+        env["PATH"] = venv_scripts + os.pathsep + env.get("PATH", "")
+        # Clear and set PYTHONPATH to prioritize venv
+        env["PYTHONPATH"] = venv_lib
+        # Set VIRTUAL_ENV
+        env["VIRTUAL_ENV"] = venv_dir
+        # Unset PYTHONHOME to avoid conflicts
+        env.pop("PYTHONHOME", None)
+        
+        # Debug information
+        with _engine_lock:
+            _engine_state["output_lines"].append(f"DEBUG: Using Python: {python_executable}")
+            _engine_state["output_lines"].append(f"DEBUG: Venv exists: {os.path.exists(venv_python)}")
+            _engine_state["output_lines"].append(f"DEBUG: VIRTUAL_ENV: {env.get('VIRTUAL_ENV', 'Not set')}")
+            _engine_state["output_lines"].append(f"DEBUG: PYTHONPATH: {env.get('PYTHONPATH', 'Not set')}")
+            
+        # First test yfinance import in subprocess
+        test_cmd = [python_executable, "-c", "import yfinance; print('yfinance import successful')"]
+        with _engine_lock:
+            _engine_state["output_lines"].append(f"DEBUG: Testing yfinance import...")
+            
+        test_proc = subprocess.Popen(
+            test_cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, cwd=SCRIPT_DIR, env=env
+        )
+        test_output, _ = test_proc.communicate(timeout=10)
+        
+        with _engine_lock:
+            _engine_state["output_lines"].append(f"DEBUG: yfinance test result: {test_output.strip()}")
+            
+        # If test failed, don't proceed with main command
+        if test_proc.returncode != 0:
+            with _engine_lock:
+                _engine_state["output_lines"].append("ERROR: yfinance import test failed, aborting engine run")
+                _engine_state["success"] = False
+                _engine_state["done"] = True
+                _engine_state["running"] = False
+            return
+        
+        cmd_list = [python_executable, os.path.join(SCRIPT_DIR, "paper_trader.py"), action]
         if extra_args:
             cmd_list.extend(extra_args)
         proc = subprocess.Popen(
@@ -323,6 +429,11 @@ def start_engine(action, extra_args=None):
             "success": None,
             "started_at": datetime.now().isoformat(),
         }
+        # Add debug info about Python executable immediately
+        _engine_state["output_lines"].append("DEBUG: start_engine called")
+        venv_python = r"C:\Users\tyagipra\Coding\Nifty_Data\.venv\Scripts\python.exe"
+        _engine_state["output_lines"].append(f"DEBUG: venv Python exists: {os.path.exists(venv_python)}")
+        _engine_state["output_lines"].append(f"DEBUG: venv Python path: {venv_python}")
     t = threading.Thread(target=_engine_worker, args=(action, extra_args), daemon=True)
     t.start()
     return True
@@ -405,8 +516,11 @@ def fetch_live_prices(tickers: list) -> dict:
     Returns {ticker_raw: price} dict. Non-blocking best-effort."""
     import pandas as pd
     prices = {}
-    if not _HAS_YF or not tickers:
-        print(f"[LIVE PRICE] Skipped: _HAS_YF={_HAS_YF}, tickers={len(tickers) if tickers else 0}")
+    if not _HAS_YF:
+        print(f"❌ [LIVE PRICE] yfinance not available (_HAS_YF={_HAS_YF})")
+        return prices
+    if not tickers:
+        print(f"⚠️ [LIVE PRICE] No tickers provided")
         return prices
     # Build unique Yahoo symbols — tickers may already have .NS/.BO suffix
     unique = list(set(tickers))
@@ -2529,6 +2643,46 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
+        elif path == "health":
+            # Health check endpoint for debugging
+            health_status = {
+                "yfinance_available": _HAS_YF,
+                "yfinance_version": yf.__version__ if _HAS_YF else "Not available",
+                "open_trades_count": len(q_open_trades()),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            if _HAS_YF:
+                # Test a quick price fetch
+                try:
+                    test_data = yf.download("SBIN.NS", period="1d", progress=False)
+                    health_status["price_test"] = "✅ SUCCESS" if not test_data.empty else "❌ Empty data"
+                except Exception as e:
+                    health_status["price_test"] = f"❌ ERROR: {e}"
+            else:
+                health_status["price_test"] = "❌ yfinance not available"
+                
+            response_html = f"""
+            <!DOCTYPE html>
+            <html><head><title>Traqo Health Check</title>
+            <style>body{{font-family:monospace; padding:20px; background:#f5f5f5;}} 
+            .status{{padding:10px; margin:5px; border-radius:5px; background:white;}}</style>
+            </head><body>
+            <h1>🏥 Traqo Health Check</h1>
+            <div class="status"><strong>yfinance Available:</strong> {health_status['yfinance_available']}</div>
+            <div class="status"><strong>yfinance Version:</strong> {health_status['yfinance_version']}</div>
+            <div class="status"><strong>Price Test:</strong> {health_status['price_test']}</div>
+            <div class="status"><strong>Open Trades:</strong> {health_status['open_trades_count']}</div>
+            <div class="status"><strong>Timestamp:</strong> {health_status['timestamp']}</div>
+            <p><a href="/">← Back to Dashboard</a></p>
+            </body></html>
+            """
+            self.send_response(200)
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(response_html.encode("utf-8"))
+            return
+
         elif path == "trade/cancel":
             try:
                 trade_id = int(params.get("id", [0])[0])
@@ -2554,6 +2708,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        elif path == "trade/purge":
+            # Purge specific trade IDs (works on any status, not just OPEN)
+            try:
+                ids_str = params.get("ids", [""])[0]
+                ids = [int(x.strip()) for x in ids_str.split(",") if x.strip().isdigit()]
+                if ids:
+                    purge_closed_trades(ids)
+            except Exception:
+                pass
+            self.send_response(302)
+            self.send_header("Location", "/trades")
+            self.end_headers()
+            return
+
+        elif path == "trade/purge-date":
+            # Purge all non-OPEN trades closed between from_date and to_date
+            try:
+                from_dt = params.get("from", [""])[0]
+                to_dt = params.get("to", [from_dt])[0]
+                if from_dt:
+                    purge_trades_by_date(from_dt, to_dt)
+            except Exception:
+                pass
+            self.send_response(302)
+            self.send_header("Location", "/trades")
+            self.end_headers()
+            return
+
         self.send_response(302)
         self.send_header("Location", "/dashboard")
         self.end_headers()
@@ -2573,7 +2755,16 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 if __name__ == "__main__":
     port = 8521
     print(f"\n  Traqo — RAG Powered Quantitative Candlestick Intelligence")
-    print(f"  http://localhost:{port}\n")
+    print(f"  http://localhost:{port}")
+    
+    # Display yfinance status prominently
+    if _HAS_YF:
+        print(f"  ✅ Live prices: ENABLED (yfinance v{yf.__version__})")
+    else:
+        print(f"  ❌ Live prices: DISABLED (yfinance not found)")
+        print(f"  💡 Fix: Activate virtual environment and run 'pip install yfinance'")
+    
+    print(f"  🏥 Health check: http://localhost:{port}/health\n")
 
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
 
