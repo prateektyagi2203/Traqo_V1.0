@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pattern Backtest Results - Traqo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        .metric-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .metric-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+        }
+        .positive { color: #10b981; }
+        .negative { color: #ef4444; }
+        .neutral { color: #6b7280; }
+        table tr:hover { background-color: #f5f5f5; }
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .status-promoted { background-color: #d1fae5; color: #065f46; }
+        .status-monitor { background-color: #fef3c7; color: #92400e; }
+        .status-rejected { background-color: #fee2e2; color: #7f1d1d; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="bg-white rounded-lg shadow p-6 mb-6">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">Pattern Backtest Results</h1>
+            <p class="text-gray-600">Comprehensive analysis of 19 tested candlestick patterns</p>
+            <p class="text-sm text-gray-500 mt-2">Generated: 2026-03-14 23:03:27</p>
+        </div>
+        
+        <!-- Summary Stats -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div class="bg-white rounded-lg shadow p-4 metric-card">
+                <p class="text-gray-600 text-sm font-semibold">Total Patterns Tested</p>
+                <p class="text-2xl font-bold text-blue-600">19</p>
+            </div>
+            <div class="bg-white rounded-lg shadow p-4 metric-card">
+                <p class="text-gray-600 text-sm font-semibold">Panic Patterns</p>
+                <p class="text-2xl font-bold text-red-600">11</p>
+            </div>
+            <div class="bg-white rounded-lg shadow p-4 metric-card">
+                <p class="text-gray-600 text-sm font-semibold">Normal Patterns</p>
+                <p class="text-2xl font-bold text-green-600">8</p>
+            </div>
+            <div class="bg-white rounded-lg shadow p-4 metric-card">
+                <p class="text-gray-600 text-sm font-semibold">Avg Win Rate</p>
+                <p class="text-2xl font-bold text-gray-900">
+                    47.2%
+                </p>
+            </div>
+        </div>
+        
+        <!-- Main Results Table -->
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <div class="px-6 py-4 bg-gray-100 border-b border-gray-200">
+                <h2 class="text-lg font-bold text-gray-900">Pattern Performance Rankings</h2>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                            <th class="px-6 py-3 text-left font-semibold text-gray-700">#</th>
+                            <th class="px-6 py-3 text-left font-semibold text-gray-700">Pattern Name</th>
+                            <th class="px-6 py-3 text-center font-semibold text-gray-700">Category</th>
+                            <th class="px-6 py-3 text-center font-semibold text-gray-700">Market Condition</th>
+                            <th class="px-6 py-3 text-center font-semibold text-gray-700">Profit Factor</th>
+                            <th class="px-6 py-3 text-center font-semibold text-gray-700">Win Rate</th>
+                            <th class="px-6 py-3 text-center font-semibold text-gray-700">Total Trades</th>
+                            <th class="px-6 py-3 text-center font-semibold text-gray-700">Return %</th>
+                            <th class="px-6 py-3 text-center font-semibold text-gray-700">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-200">
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">1</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Tri Star Bullish</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">2.26</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">55.6%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">9</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">5.10%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-promoted">PROMOTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">2</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Three Stars South</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Normal Continuation</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Low-Medium Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">1.79</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">58.2%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">91</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">29.87%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-promoted">PROMOTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">3</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Bullish Harami</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">1.47</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">51.0%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">1195</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">302.25%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-promoted">PROMOTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">4</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Unique Three River</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Normal Continuation</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Low-Medium Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">1.34</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">59.1%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">22</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">5.74%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-promoted">PROMOTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">5</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Mat Hold</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Normal Continuation</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Low-Medium Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">1.33</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">51.3%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">2262</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">383.68%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-promoted">PROMOTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">6</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Inverted Hammer</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">1.24</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">51.3%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">308</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">49.63%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-monitor">MONITOR</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">7</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Bullish Counterattack</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Normal Continuation</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Low-Medium Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">1.23</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">51.1%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">795</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">93.36%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-monitor">MONITOR</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">8</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Dragonfly Doji</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Normal Continuation</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Low-Medium Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">1.22</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">50.0%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">4</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">0.31%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-monitor">MONITOR</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">9</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Matching Low</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Normal Continuation</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Low-Medium Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">1.20</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">51.2%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">1462</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">140.25%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-monitor">MONITOR</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">10</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Morning Doji Star</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">1.19</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">49.1%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">277</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">33.58%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-monitor">MONITOR</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">11</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Separating Lines</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Normal Continuation</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Low-Medium Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">1.11</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">49.8%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">1728</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">97.48%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-monitor">MONITOR</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">12</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Tweezer Bottom</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">1.04</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">47.1%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">635</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">13.97%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-monitor">MONITOR</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">13</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Upside Tasuki Gap</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Normal Continuation</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Low-Medium Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">1.00</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">40.5%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">131</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">-0.21%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-rejected">REJECTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">14</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Morning Star</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">0.97</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">48.0%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">1025</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">-18.79%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-rejected">REJECTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">15</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Bullish Engulfing</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">0.96</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">46.5%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">933</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">-27.69%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-rejected">REJECTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">16</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Ladder Bottom</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">0.83</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">49.1%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">886</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">-120.65%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-rejected">REJECTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">17</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Piercing Line</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">0.82</td>
+                            <td class="px-6 py-4 text-center font-semibold neutral">45.3%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">137</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">-20.90%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-rejected">REJECTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">18</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Three White Soldiers</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">0.78</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">43.4%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">332</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">-56.27%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-rejected">REJECTED</span></td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4 font-semibold text-gray-700">19</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">Abandoned Baby Bullish</td>
+                            <td class="px-6 py-4 text-center text-gray-600">Panic Reversal</td>
+                            <td class="px-6 py-4 text-center text-gray-600">High Volatility</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">0.00</td>
+                            <td class="px-6 py-4 text-center font-semibold negative">0.0%</td>
+                            <td class="px-6 py-4 text-center text-gray-600">0</td>
+                            <td class="px-6 py-4 text-center font-semibold positive">0.00%</td>
+                            <td class="px-6 py-4 text-center"><span class="status-badge status-rejected">REJECTED</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Detailed Breakdown -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+            <div class="bg-white rounded-lg shadow">
+                <div class="px-6 py-4 bg-red-50 border-b border-red-200">
+                    <h3 class="text-lg font-bold text-red-900">Panic/High Volatility Patterns</h3>
+                    <p class="text-sm text-red-700 mt-1">Bullish reversals on volatility spikes</p>
+                </div>
+                <div class="divide-y divide-gray-200">
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Tri Star Bullish</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">2.26</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">55.6%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">9</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">5</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Bullish Harami</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.47</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">51.0%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">1195</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">610</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Inverted Hammer</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.24</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">51.3%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">308</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">158</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Morning Doji Star</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.19</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">49.1%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">277</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">136</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Tweezer Bottom</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.04</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">47.1%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">635</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">299</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Morning Star</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">0.97</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">48.0%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">1025</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">492</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Bullish Engulfing</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">0.96</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">46.5%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">933</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">434</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Ladder Bottom</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">0.83</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">49.1%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">886</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">435</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Piercing Line</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">0.82</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">45.3%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">137</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">62</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Three White Soldiers</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">0.78</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">43.4%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">332</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">144</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Abandoned Baby Bullish</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">0.00</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">0.0%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">0</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">0</span></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-white rounded-lg shadow">
+                <div class="px-6 py-4 bg-green-50 border-b border-green-200">
+                    <h3 class="text-lg font-bold text-green-900">Normal/Calm Market Patterns</h3>
+                    <p class="text-sm text-green-700 mt-1">Continuations on low-medium volatility</p>
+                </div>
+                <div class="divide-y divide-gray-200">
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Three Stars South</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.79</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">58.2%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">91</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">53</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Unique Three River</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.34</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">59.1%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">22</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">13</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Mat Hold</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.33</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">51.3%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">2262</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">1161</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Bullish Counterattack</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.23</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">51.1%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">795</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">406</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Dragonfly Doji</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.22</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">50.0%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">4</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">2</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Matching Low</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.20</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">51.2%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">1462</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">748</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Separating Lines</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.11</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">49.8%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">1728</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">861</span></p>
+                        </div>
+                    </div>
+                    <div class="px-6 py-4 hover:bg-gray-50">
+                        <p class="font-semibold text-gray-900">Upside Tasuki Gap</p>
+                        <div class="grid grid-cols-2 gap-2 mt-2 text-sm">
+                            <p class="text-gray-600">PF: <span class="font-semibold">1.00</span></p>
+                            <p class="text-gray-600">Win%: <span class="font-semibold">40.5%</span></p>
+                            <p class="text-gray-600">Trades: <span class="font-semibold">131</span></p>
+                            <p class="text-gray-600">Wins: <span class="font-semibold">53</span></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Key Insights -->
+        <div class="bg-white rounded-lg shadow mt-6 p-6">
+            <h3 class="text-lg font-bold text-gray-900 mb-4">📊 Key Insights</h3>
+            <ul class="space-y-3 text-gray-700">
+                <li class="flex items-start">
+                    <span class="text-blue-600 font-bold mr-3">→</span>
+                    <span><strong>Best Performer:</strong> {sorted_patterns[0][0].replace('_', ' ').title()} with PF of {sorted_patterns[0][1]['metrics'].get('profit_factor', 0):.2f}</span>
+                </li>
+                <li class="flex items-start">
+                    <span class="text-blue-600 font-bold mr-3">→</span>
+                    <span><strong>Highest Win Rate:</strong> {max(all_patterns.items(), key=lambda x: x[1]['metrics'].get('win_pct', 0))[0].replace('_', ' ').title()} at {max(all_patterns.items(), key=lambda x: x[1]['metrics'].get('win_pct', 0))[1]['metrics'].get('win_pct', 0):.1f}%</span>
+                </li>
+                <li class="flex items-start">
+                    <span class="text-blue-600 font-bold mr-3">→</span>
+                    <span><strong>Total Trades Analyzed:</strong> {sum(p[1]['metrics'].get('total_trades', 0) for p in all_patterns.items())} across all patterns</span>
+                </li>
+            </ul>
+        </div>
+        
+        <!-- Footer -->
+        <div class="text-center text-gray-600 text-sm mt-8 py-4">
+            <p>Traqo Pattern Backtest Report | Generated: {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}</p>
+        </div>
+    </div>
+</body>
+</html>

@@ -11,7 +11,14 @@ Based on walk-forward OOS analysis (2024-2025 test, 2016-2023 train):
   - 8 profitable patterns whitelisted, 6 harmful patterns excluded
   - Daily timeframe + good patterns: PF 1.19, 3,103 trades
 
+Updates (March 2026):
+  - OOS retest reveals market regime change since Feb 24
+  - doji: 0.41 → 3.41 PF (exceptional out-of-sample)
+  - stick_sandwich: newly added to whitelist
+  - three_inside_up: re-evaluated (1.16 PF test, monitor status)
+
 Change log:
+  2026-03-XX  OOS retest on 17 untested patterns — 4 promotions
   2026-02-24  Initial production config based on OOS diagnostics
 """
 
@@ -122,9 +129,9 @@ EXCLUDED_FX = {"eurusd", "usdinr", "dxy"}
 # Patterns with historically negative edge (PF < 0.5) — never trade
 EXCLUDED_PATTERNS = {
     "hanging_man",        # PF 0.34
-    "doji",               # PF 0.41
-    "three_outside_up",   # PF 0.26
-    "three_inside_up",    # PF 0.30
+    # "doji",             # PROMOTED: PF 0.41 (old) → 3.41 (OOS 2024-2025)
+    "three_outside_up",   # PF 0.26 (still underperforming: 1.06 test PF)
+    # "three_inside_up",  # Re-evaluated: 1.16 PF test (monitor status)
     "three_outside_down", # PF 0.15
     "bearish_harami",     # PF 0.42
 }
@@ -133,14 +140,27 @@ EXCLUDED_PATTERNS = {
 # Only these patterns generate a trade signal.
 # Other patterns → neutral (no trade).
 WHITELISTED_PATTERNS = {
-    "homing_pigeon",         # OOS profitable
-    "hammer",                # OOS profitable, classic reversal
-    "three_black_crows",     # OOS profitable, strong reversal
-    "belt_hold_bullish",     # OOS profitable
-    "three_inside_down",     # OOS profitable
-    "harami_cross",          # OOS profitable
-    "bullish_kicker",        # OOS profitable, strong reversal
-    "rising_three_methods",  # OOS profitable, continuation
+    "belt_hold_bullish",
+    "bullish_counterattack",
+    "bullish_harami",
+    "bullish_kicker",
+    "doji",               # NEWLY PROMOTED: OOS test 3.41 PF, 62.4% win%
+    "dragonfly_doji",
+    "hammer",
+    "harami_cross",
+    "homing_pigeon",
+    "inverted_hammer",
+    "mat_hold",
+    "matching_low",
+    "rising_three_methods",
+    "separating_lines",
+    "stick_sandwich",     # NEWLY PROMOTED: OOS test 1.39 PF, 54.0% win%
+    "three_black_crows",
+    "three_inside_down",
+    "three_inside_up",    # Re-added: OOS test 1.16 PF (monitor threshold)
+    "three_stars_south",
+    "tri_star_bullish",
+    "unique_three_river",
 }
 
 # Tier A patterns: high-PF patterns where tight SL kills winners
@@ -196,6 +216,12 @@ HORIZON_ALLOWED_TIERS = {
 # Tier_4 (pattern-only match) has OOS PF 0.79 → reject.
 # Tier_1 OOS PF 0.96, Tier_2 ~0.9 — accept tier_1 and tier_2 only.
 ALLOWED_TIERS = {"tier_1", "tier_2"}
+
+# NEW (Improvement #2): Allow tier_3 in ensemble signals only
+# Tier_3 (pattern + timeframe) with 2+ patterns + confidence penalty
+ALLOWED_TIERS_ENSEMBLE = {"tier_1", "tier_2", "tier_3"}  # tier_3 allowed in ensembles
+ENSEMBLE_TIER3_CONFIDENCE_PENALTY = 0.5  # Halve confidence for tier_3 members
+MIN_ENSEMBLE_PATTERNS = 2  # Need at least 2 patterns to allow tier_3
 
 # Minimum match threshold (lowered from 10 to improve tier_1/tier_2 hit rate)
 MIN_MATCHES = 5

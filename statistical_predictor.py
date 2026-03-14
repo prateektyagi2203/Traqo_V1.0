@@ -184,6 +184,180 @@ class StatisticalPredictor:
         """Re-read feedback file (call after new outcomes are fed)."""
         self._load_feedback()
 
+    def calculate_adaptive_decay(self, pattern, recent_wr, historical_wr, regime_stability, trade_recency_days):
+        """
+        IMPROVEMENT #3: Adaptive Temporal Decay
+        
+        Weight recent outcomes more heavily if regime is stable, less heavily if unstable.
+        
+        Args:
+            pattern: Pattern name
+            recent_wr: Win rate from last 30 days (may be None)
+            historical_wr: Win rate from 30-90 days ago
+            regime_stability: Float 0-1 (1=very stable, 0=highly volatile)
+            trade_recency_days: Days since last trade (lower = more recent)
+        
+        Returns:
+            Adaptive weighted win rate that accounts for recency and regime
+        """
+        if recent_wr is None or historical_wr is None:
+            return historical_wr
+        
+        # Base decay: if regime unstable, give more weight to historical data
+        # If regime stable, trust recent data more
+        recent_weight_base = 0.6  # By default, 60% recent / 40% historical
+        
+        # Adjust based on regime stability
+        # Stable regime (0.8+): increase recent weight to 75%
+        # Unstable regime (0.3-): decrease recent weight to 40%
+        recent_weight = 0.4 + (regime_stability * 0.35)  # Range: 0.4 to 0.75
+        
+        # Further adjust based on recency: decay if older
+        recency_discount = max(0.7, 1.0 - (trade_recency_days / 60))  # Decay over 60 days
+        recent_weight *= recency_discount
+        
+        adaptive_wr = recent_wr * recent_weight + historical_wr * (1 - recent_weight)
+        return round(adaptive_wr, 2)
+    
+    def get_horizon_specific_edge(self, pattern, horizon_label, trend_short=None):
+        """
+        IMPROVEMENT #5: Horizon-Specific Edges
+        
+        Detect if a pattern has a measurable edge in specific horizon + trend combos.
+        Use horizon_adjustments feedback to prefer winning combinations.
+        
+        Args:
+            pattern: Pattern name
+            horizon_label: e.g., 'BTST_1d', 'Swing_3d'
+            trend_short: Optional trend context (e.g., 'bullish', 'bearish')
+        
+        Returns:
+            Dict with edge metrics:
+              - has_edge: bool (WR > 50% and sample >= 5)
+              - edge_strength: float 0-1 (how confident in the edge)
+              - recommended_confidence_boost: float (multiply confidence by this)
+              - source: str (where data came from)
+        """
+        edge = {
+            "has_edge": False,
+            "edge_strength": 0.0,
+            "recommended_confidence_boost": 1.0,
+            "source": "none",
+            "wr": None,
+            "sample_size": None,
+        }
+        
+        if not horizon_label:
+            return edge
+        
+        # Check triple first (most specific): pattern__trend__horizon
+        if trend_short:
+            tkey = f"{pattern}__{trend_short}__{horizon_label}"
+            ta = self.feedback_triple_adj.get(tkey)
+            if ta and ta.get("total_trades", 0) >= 5:
+                wr = ta.get("decay_weighted_win_rate", ta.get("win_rate", 50))
+                if wr > 50:
+                    edge["has_edge"] = True
+                    edge["edge_strength"] = (wr - 50) / 50  # Normalize to 0-1
+                    edge["recommended_confidence_boost"] = 1.0 + (edge["edge_strength"] * 0.25)  # +0% to +25%
+                    edge["source"] = f"triple:{tkey}"
+                    edge["wr"] = round(wr, 1)
+                    edge["sample_size"] = ta.get("total_trades")
+                    return edge
+        
+        # Check horizon (less specific): pattern__horizon
+        hkey = f"{pattern}__{horizon_label}"
+        ha = self.feedback_horizon_adj.get(hkey)
+        if ha and ha.get("total_trades", 0) >= 5:
+            wr = ha.get("decay_weighted_win_rate", ha.get("win_rate", 50))
+            if wr > 50:
+                edge["has_edge"] = True
+                edge["edge_strength"] = (wr - 50) / 50
+                edge["recommended_confidence_boost"] = 1.0 + (edge["edge_strength"] * 0.20)  # +0% to +20%
+                edge["source"] = f"horizon:{hkey}"
+                edge["wr"] = round(wr, 1)
+                edge["sample_size"] = ha.get("total_trades")
+                return edge
+        
+        return edge
+    
+    def calculate_confidence_interval(self, wins, total, confidence_level=0.95):
+        """
+        FEATURE #1: Confidence Intervals for Win Rates
+        
+        Calculate Wilson score confidence interval for binomial proportion.
+        Returns 95% CI by default.
+        
+        Args:
+            wins: Number of winning trades
+            total: Total number of trades (sample size)
+            confidence_level: Desired confidence (default 95% = 0.95)
+        
+        Returns:
+            Dict with:
+              - win_rate: float (observed WR as %)
+              - ci_lower: float (lower bound %)
+              - ci_upper: float (upper bound %)
+              - ci_width: float (width of interval %)
+              - sample_size: int
+              - is_significant: bool (True if lower bound > 50%)
+        """
+        if total == 0:
+            return {"win_rate": 50.0, "ci_lower": 0.0, "ci_upper": 100.0, 
+                   "ci_width": 100.0, "sample_size": 0, "is_significant": False}
+        
+        # Wilson score CI (more accurate for small samples than normal approximation)
+        p = wins / total
+        z = 1.96 if confidence_level == 0.95 else 2.576  # z-score for 95% or 99%
+        
+        denominator = 1 + z**2 / total
+        center = (p + z**2 / (2 * total)) / denominator
+        margin = z * np.sqrt(p * (1 - p) / total + z**2 / (4 * total**2)) / denominator
+        
+        ci_lower = max(0.0, (center - margin) * 100)
+        ci_upper = min(100.0, (center + margin) * 100)
+        wr_pct = p * 100
+        
+        return {
+            "win_rate": round(wr_pct, 1),
+            "ci_lower": round(ci_lower, 1),
+            "ci_upper": round(ci_upper, 1),
+            "ci_width": round(ci_upper - ci_lower, 1),
+            "sample_size": total,
+            "is_significant": ci_lower > 50.0,  # True if we can be 95% confident WR > 50%
+        }
+    
+    def detect_regime_quality(self, regime_component):
+        """
+        Detect market regime quality and stability.
+        
+        Returns:
+            Dict with:
+              - stability: 0-1 (1=very stable, 0=volatile)
+              - regime_component: str
+              - confidence: 0-1
+        """
+        if not regime_component:
+            return {"stability": 0.5, "regime_component": "unknown", "confidence": 0.3}
+        
+        # Extract first component (e.g., "trending" from "trending|bullish_aligned|normal_volatility")
+        first_comp = regime_component.split("|")[0] if "|" in regime_component else regime_component
+        
+        # Stability scores by regime
+        stability_map = {
+            "trending": 0.8,     # Trending = stable bearish/bullish bias
+            "mean_revert": 0.6,  # Mean revert = moderate volatility
+            "choppy": 0.3,       # Choppy = low stability
+            "unknown": 0.5,      # Unknown = neutral
+        }
+        
+        stability = stability_map.get(first_comp.lower(), 0.5)
+        return {
+            "stability": stability,
+            "regime_component": first_comp,
+            "confidence": 0.8,
+        }
+
     def get_horizon_feedback(self, patterns, trend_short, horizon_label):
         """Look up horizon-specific feedback WR for given patterns.
 
@@ -677,8 +851,17 @@ class StatisticalPredictor:
         return result
 
     def predict_multi_pattern(self, patterns_str, **kwargs):
-        """Predict for a comma-separated pattern string.
-        Returns the prediction for the strongest-edge pattern."""
+        """Predict for comma-separated patterns with ENSEMBLE voting.
+        Returns an ensemble prediction if 2+ patterns qualify, otherwise returns best single pattern.
+        
+        NEW (Improvement #1): Ensemble pattern voting
+        ---------------------
+        - Multiple independent patterns confirm → higher confidence
+        - Weight by historical win rates from feedback
+        - Allow tier_3 only in ensembles (with penalty)
+        """
+        from trading_config import MIN_ENSEMBLE_PATTERNS, ALLOWED_TIERS_ENSEMBLE, ENSEMBLE_TIER3_CONFIDENCE_PENALTY
+        
         patterns = [p.strip() for p in patterns_str.split(",") if p.strip()]
         if not patterns:
             return None
@@ -688,15 +871,58 @@ class StatisticalPredictor:
         if not patterns:
             return None
 
-        best = None
+        # Predict for each pattern
+        predictions = {}
         for p in patterns:
             pred = self.predict(p, **kwargs)
-            if pred is None:
-                continue
-            if best is None or abs(pred.get("bullish_edge", 0)) > abs(best.get("bullish_edge", 0)):
-                best = pred
+            if pred and pred.get("win_rate", 0) > 45:  # Only high-confidence patterns
+                predictions[p] = pred
 
-        return best
+        if len(predictions) < MIN_ENSEMBLE_PATTERNS:
+            # Not enough patterns for ensemble — return best single pattern
+            if predictions:
+                best = max(predictions.values(), key=lambda x: abs(x.get("bullish_edge", 0)))
+                return best
+            return None
+
+        # ENSEMBLE: 2+ patterns passed filters
+        # Check if any are tier_3 — if so, apply confidence penalty
+        has_tier_3 = any(p.get("match_tier") == "tier_3" for p in predictions.values())
+        
+        # Aggregate ensemble metrics
+        wr_vals = [p.get("win_rate", 50) for p in predictions.values()]
+        pf_vals = [p.get("profit_factor", 1.0) for p in predictions.values()]
+        edge_vals = [p.get("bullish_edge", 0) for p in predictions.values()]
+        
+        ensemble_wr = sum(wr_vals) / len(wr_vals)
+        ensemble_pf = sum(pf_vals) / len(pf_vals)
+        ensemble_edge = sum(edge_vals) / len(edge_vals)
+        
+        # Apply tier_3 penalty if present
+        conf_multiplier = ENSEMBLE_TIER3_CONFIDENCE_PENALTY if has_tier_3 else 1.0
+        
+        # Use first pattern's metadata as base, override with ensemble metrics
+        best_single = max(predictions.values(), key=lambda x: abs(x.get("bullish_edge", 0)))
+        ensemble_pred = best_single.copy()
+        
+        ensemble_pred["patterns"] = list(predictions.keys())  # All patterns, not just best
+        ensemble_pred["pattern_count"] = len(predictions)
+        ensemble_pred["win_rate"] = ensemble_wr
+        ensemble_pred["profit_factor"] = ensemble_pf
+        ensemble_pred["bullish_edge"] = ensemble_edge
+        ensemble_pred["is_ensemble"] = True
+        ensemble_pred["has_tier_3"] = has_tier_3
+        ensemble_pred["confidence_score"] = best_single.get("confidence_score", 0.5) * conf_multiplier
+        
+        # Upgrade confidence level if 3+ patterns agree
+        if len(predictions) >= 3:
+            base_conf = best_single.get("confidence_level", "MEDIUM")
+            if base_conf == "LOW":
+                ensemble_pred["confidence_level"] = "MEDIUM"
+            elif base_conf == "MEDIUM":
+                ensemble_pred["confidence_level"] = "HIGH"
+        
+        return ensemble_pred
 
     def format_prediction(self, pred, query_summary=""):
         """Format prediction into a readable report."""

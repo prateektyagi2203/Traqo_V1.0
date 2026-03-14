@@ -4842,6 +4842,38 @@
     "source": "paper_trader"
   },
   {
+    "trade_id": "paper_244",
+    "ticker": "INTELLECT.NS",
+    "instrument": "intellect",
+    "sector": "it",
+    "direction": "BULLISH",
+    "patterns": [
+      "harami_cross"
+    ],
+    "horizon_days": 10,
+    "horizon_label": "Swing_10d",
+    "predicted_win_rate": 68.0,
+    "predicted_pf": 3.82,
+    "confidence": "HIGH",
+    "outcome": "loss",
+    "actual_return_pct": -5.0,
+    "exit_reason": "sl_hit",
+    "indicators_at_entry": {
+      "ema_9": 703.4197849069195,
+      "ema_21": 748.9907091020391,
+      "ema_50": 839.4037687366703,
+      "rsi_14": 27.747858452548783,
+      "atr_14": 29.228567940848215,
+      "vol_ratio": 0.06920189367609884,
+      "price_vs_vwap": "below",
+      "trend_short": "bearish",
+      "rsi_zone": "oversold"
+    },
+    "notes": "Paper trade (auto) \u2014 Swing_10d",
+    "timestamp": "2026-03-05",
+    "source": "paper_trader"
+  },
+  {
     "trade_id": "paper_301",
     "ticker": "TATAELXSI.NS",
     "instrument": "tataelxsi",
@@ -4903,38 +4935,6 @@
     },
     "notes": "Paper trade (auto) \u2014 Swing_3d",
     "timestamp": "2026-02-27",
-    "source": "paper_trader"
-  },
-  {
-    "trade_id": "paper_244",
-    "ticker": "INTELLECT.NS",
-    "instrument": "intellect",
-    "sector": "it",
-    "direction": "BULLISH",
-    "patterns": [
-      "harami_cross"
-    ],
-    "horizon_days": 10,
-    "horizon_label": "Swing_10d",
-    "predicted_win_rate": 68.0,
-    "predicted_pf": 3.82,
-    "confidence": "HIGH",
-    "outcome": "loss",
-    "actual_return_pct": -5.0,
-    "exit_reason": "sl_hit",
-    "indicators_at_entry": {
-      "ema_9": 703.4197849069195,
-      "ema_21": 748.9907091020391,
-      "ema_50": 839.4037687366703,
-      "rsi_14": 27.747858452548783,
-      "atr_14": 29.228567940848215,
-      "vol_ratio": 0.06920189367609884,
-      "price_vs_vwap": "below",
-      "trend_short": "bearish",
-      "rsi_zone": "oversold"
-    },
-    "notes": "Paper trade (auto) \u2014 Swing_10d",
-    "timestamp": "2026-03-05",
     "source": "paper_trader"
   }
 ]

@@ -1741,6 +1741,59 @@ def _load_learned_rules():
         return {}
 
 
+def _delete_feedback_entries(indices):
+    """Delete feedback entries by index from feedback log AND database."""
+    try:
+        entries = _load_feedback_log()
+        if not entries:
+            return {"status": "error", "message": "No feedback entries to delete"}
+        
+        # Sort indices in reverse to avoid index shifting
+        sorted_indices = sorted(set(indices), reverse=True)
+        deleted_trades = []
+        deleted_db_ids = []
+        
+        db = get_db()
+        
+        for idx in sorted_indices:
+            if 0 <= idx < len(entries):
+                entry = entries[idx]
+                ticker = entry.get("ticker", "")
+                entry_date = entry.get("timestamp", "")
+                
+                # Find matching trade in database by ticker and entry date
+                if ticker and entry_date:
+                    match = db.execute(
+                        "SELECT id FROM trades WHERE ticker = ? AND entry_date = ?",
+                        (ticker, entry_date)
+                    ).fetchone()
+                    if match:
+                        deleted_db_ids.append(match[0])
+                
+                deleted_trades.append(entry.get("trade_id", f"entry_{idx}"))
+                entries.pop(idx)
+        
+        # Save updated feedback log
+        with open(FEEDBACK_FILE, "w") as f:
+            json.dump(entries, f, indent=2)
+        
+        # Delete from database by id
+        if deleted_db_ids:
+            placeholders = ','.join('?' * len(deleted_db_ids))
+            db.execute(f"DELETE FROM trades WHERE id IN ({placeholders})", deleted_db_ids)
+            db.commit()
+        
+        return {
+            "status": "success",
+            "deleted_count": len(deleted_trades),
+            "deleted_trades": deleted_trades,
+            "deleted_db_count": len(deleted_db_ids),
+            "remaining": len(entries)
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 def _feedback_csv_bytes():
     """Generate CSV bytes from feedback log for download."""
     entries = _load_feedback_log()
@@ -2164,7 +2217,7 @@ def render_feedback():
 
     # ---- Section 4: Raw Feedback Log ----
     log_rows = ""
-    for e in reversed(entries):  # newest first
+    for idx, e in enumerate(reversed(entries)):  # newest first
         outcome = e.get("outcome", "")
         out_cls = "text-emerald-600 font-semibold" if outcome == "win" else "text-red-600 font-semibold"
         ret_val = e.get("actual_return_pct")
@@ -2177,8 +2230,10 @@ def render_feedback():
                 ts = datetime.fromisoformat(ts).strftime("%d %b %y %H:%M")
             except Exception:
                 pass
+        actual_idx = total_entries - 1 - idx  # Map to original list index
         log_rows += f'''
-        <tr class="hover:bg-blue-50/50 border-b border-gray-100">
+        <tr class="hover:bg-blue-50/50 border-b border-gray-100 feedback-row" data-index="{actual_idx}">
+          <td class="px-3 py-2 text-xs"><input type="checkbox" class="feedback-checkbox" data-index="{actual_idx}" onchange="updateSelectionInfo()"></td>
           <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{_e(ts)}</td>
           <td class="px-3 py-2 text-xs font-medium text-gray-800">{_e(_ticker(e.get("ticker","")))}</td>
           <td class="px-3 py-2 text-xs text-gray-600">{_e(e.get("direction",""))}</td>
@@ -2193,14 +2248,28 @@ def render_feedback():
     log_section = f'''
     <div class="glass rounded-xl p-6 mb-6">
       <div class="flex items-center justify-between mb-4">
-        <h3 class="text-lg font-semibold text-gray-800">Raw Feedback Log</h3>
-        <a href="/feedback/download" class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-          Download CSV
-        </a>
+        <div>
+          <h3 class="text-lg font-semibold text-gray-800">Raw Feedback Log</h3>
+          <p class="text-xs text-gray-500 mt-1" id="selection-info">No entries selected</p>
+        </div>
+        <div class="flex gap-2">
+          <a href="/feedback/download" class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            Download CSV
+          </a>
+          <button onclick="deleteFeedback()" id="delete-btn" class="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-xs font-medium rounded-lg hover:bg-red-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            Delete Selected
+          </button>
+          <button onclick="toggleSelectAll()" class="inline-flex items-center gap-2 px-4 py-2 bg-gray-600 text-white text-xs font-medium rounded-lg hover:bg-gray-700 transition-colors shadow-sm">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            <span id="select-all-text">Select All</span>
+          </button>
+        </div>
       </div>
       <div class="overflow-x-auto max-h-[500px] overflow-y-auto scrollbar-thin">
         <table class="w-full text-sm"><thead class="sticky top-0 bg-white"><tr class="border-b border-gray-200">
+          <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">✓</th>
           <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Timestamp</th>
           <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Ticker</th>
           <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Dir</th>
@@ -2212,7 +2281,60 @@ def render_feedback():
           <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Exit Reason</th>
         </tr></thead><tbody>{log_rows}</tbody></table>
       </div>
-    </div>'''
+    </div>
+    <script>
+    function toggleSelectAll() {{
+      const checkboxes = document.querySelectorAll('.feedback-checkbox');
+      const btn = document.getElementById('select-all-text');
+      const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+      checkboxes.forEach(cb => cb.checked = !allChecked);
+      btn.textContent = allChecked ? 'Select All' : 'Deselect All';
+      updateSelectionInfo();
+    }}
+    function updateSelectionInfo() {{
+      const checkboxes = document.querySelectorAll('.feedback-checkbox:checked');
+      const count = checkboxes.length;
+      const info = document.getElementById('selection-info');
+      const btn = document.getElementById('delete-btn');
+      if (count === 0) {{
+        info.textContent = 'No entries selected';
+        btn.disabled = true;
+      }} else if (count <= 10) {{
+        info.textContent = `${{count}} entries selected`;
+        btn.disabled = false;
+      }} else {{
+        info.textContent = `${{count}} entries selected (Max 10 to delete)`;
+        btn.disabled = true;
+      }}
+    }}
+    function deleteFeedback() {{
+      const checkboxes = document.querySelectorAll('.feedback-checkbox:checked');
+      const count = checkboxes.length;
+      if (count === 0) {{
+        alert('Please select at least one entry to delete');
+        return;
+      }}
+      if (count > 10) {{
+        alert('Maximum 10 entries can be deleted at once');
+        return;
+      }}
+      if (!confirm(`Delete ${{count}} feedback entries? This cannot be undone.`)) return;
+      const indices = Array.from(checkboxes).map(cb => cb.dataset.index).join(',');
+      fetch('/feedback/delete', {{
+        method: 'POST',
+        body: new URLSearchParams({{indices: indices}})
+      }}).then(r => r.json()).then(data => {{
+        if (data.status === 'success') {{
+          alert(`Deleted ${{data.deleted_count}} entries`);
+          location.reload();
+        }} else {{
+          alert(`Error: ${{data.message || 'Unknown error'}}`);
+        }}
+      }}).catch(e => {{
+        alert(`Error: ${{e.message}}`);
+      }});
+    }}
+    </script>'''
 
     # ---- Learned Rules ----
     rules_html = ""
@@ -2750,6 +2872,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path.strip("/")
         params = urllib.parse.parse_qs(parsed.query)
+
+        if path == "feedback/delete":
+            # Delete selected feedback entries
+            try:
+                content_len = int(self.headers.get('Content-Length', 0))
+                post_data = self.rfile.read(content_len).decode('utf-8')
+                parsed_params = urllib.parse.parse_qs(post_data)
+                indices_str = parsed_params.get('indices', [''])[0]
+                indices = [int(x.strip()) for x in indices_str.split(',') if x.strip().isdigit()]
+                
+                if not indices:
+                    result = {"status": "error", "message": "No valid indices provided"}
+                elif len(indices) > 10:
+                    result = {"status": "error", "message": "Maximum 10 entries can be deleted at once"}
+                else:
+                    result = _delete_feedback_entries(indices)
+            except Exception as e:
+                result = {"status": "error", "message": str(e)}
+            
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode("utf-8"))
+            return
 
         if path == "engine":
             action = params.get("action", ["run"])[0]
