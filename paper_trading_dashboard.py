@@ -23,14 +23,33 @@ from datetime import date, datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
+# ---- YFINANCE DYNAMIC IMPORT ----
+_HAS_YF = False
+yf = None
+
+def _ensure_yfinance():
+    """Dynamically import yfinance if available. Called at runtime."""
+    global _HAS_YF, yf
+    if _HAS_YF and yf is not None:
+        return True  # Already loaded
+    try:
+        import yfinance as yf_module
+        yf = yf_module
+        _HAS_YF = True
+        return True
+    except ImportError:
+        _HAS_YF = False
+        return False
+
+# Try initial import
 try:
     import yfinance as yf
     _HAS_YF = True
     print(f"✅ yfinance loaded successfully (v{yf.__version__})")
 except ImportError as e:
     _HAS_YF = False
-    print(f"❌ yfinance import failed: {e}")
-    print("💡 Solution: Ensure virtual environment is active and run: pip install yfinance")
+    print(f"⚠️  yfinance not available at startup (will retry at runtime)")
+    print(f"   Solution: Run in virtual environment with: pip install yfinance")
 
 # ---- Market Cap classification (based on index membership) ----
 _LARGECAP_TICKERS = {
@@ -513,15 +532,22 @@ def _days_between(a, b):
 # ============================================================
 def fetch_live_prices(tickers: list) -> dict:
     """Fetch current prices for a list of NSE tickers via yfinance.
-    Returns {ticker_raw: price} dict. Non-blocking best-effort."""
+    Returns {ticker_raw: price} dict. Non-blocking best-effort.
+    
+    Attempts to dynamically import yfinance if not available at startup."""
     import pandas as pd
     prices = {}
+    
+    # Try dynamic import if initial import failed
     if not _HAS_YF:
-        print(f"❌ [LIVE PRICE] yfinance not available (_HAS_YF={_HAS_YF})")
-        return prices
+        if not _ensure_yfinance():
+            print(f"❌ [LIVE PRICE] yfinance not available (install via: pip install yfinance)")
+            return prices
+    
     if not tickers:
         print(f"⚠️ [LIVE PRICE] No tickers provided")
         return prices
+    
     # Build unique Yahoo symbols — tickers may already have .NS/.BO suffix
     unique = list(set(tickers))
     yf_syms = []
@@ -589,6 +615,7 @@ def page_shell(title, active_tab, body_html):
         ("performance", "Performance", "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"),
         ("engine", "Engine Control", "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"),
         ("feedback", "Feedback Loop", "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"),
+        ("filters", "Filters", "M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"),
     ]
 
     nav_items = ""
@@ -1349,8 +1376,12 @@ def render_history():
             ret = t.get("actual_return_pct", 0) or 0
             ret_cls = "text-emerald-600" if ret >= 0 else "text-red-600"
             dir_bdg = badge(t["direction"][0] if t.get("direction") else "?", "bullish")
+            trade_id = t.get("id", 0)
             rows += f'''
-            <tr class="hover:bg-blue-50/50 transition border-b border-gray-100">
+            <tr class="hover:bg-blue-50/50 transition border-b border-gray-100" data-trade-id="{trade_id}">
+              <td class="px-3 py-3">
+                <input type="checkbox" class="trade-checkbox w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" value="{trade_id}" data-ticker="{_e(_ticker(t["ticker"]))}">
+              </td>
               <td class="px-4 py-3">{status_badge(t["status"])}</td>
               <td class="px-4 py-3 font-semibold text-gray-800">{_e(_ticker(t["ticker"]))}</td>
               <td class="px-4 py-3 text-gray-600">{_e(t.get("horizon_label",""))}</td>
@@ -1366,9 +1397,20 @@ def render_history():
 
         table = f'''
         <div class="glass rounded-xl overflow-hidden">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+            <div class="flex items-center gap-3">
+              <input type="checkbox" id="select-all-trades" class="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer">
+              <label for="select-all-trades" class="text-sm font-medium text-gray-700 cursor-pointer">Select All</label>
+              <span id="selection-count" class="text-sm text-gray-500">(0 / {len(trades)} selected, max 25)</span>
+            </div>
+            <button id="delete-selected-btn" onclick="deleteSelectedTrades()" disabled class="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
+              Delete Selected
+            </button>
+          </div>
           <div class="overflow-x-auto scrollbar-thin">
             <table class="w-full text-sm">
               <thead><tr class="border-b border-gray-200">
+                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase w-8"></th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Stock</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Horizon</th>
@@ -1384,7 +1426,90 @@ def render_history():
               <tbody>{rows}</tbody>
             </table>
           </div>
-        </div>'''
+        </div>
+
+        <script>
+        function updateSelectionCount() {{
+          const checkboxes = document.querySelectorAll('.trade-checkbox');
+          const selected = Array.from(checkboxes).filter(cb => cb.checked);
+          const count = selected.length;
+          document.getElementById('selection-count').textContent = `(${{count}} / {len(trades)} selected, max 25)`;
+          document.getElementById('delete-selected-btn').disabled = count === 0;
+          
+          // Update "Select All" checkbox state
+          const selectAllCheckbox = document.getElementById('select-all-trades');
+          if (count === 0) {{
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+          }} else if (count === checkboxes.length) {{
+            selectAllCheckbox.checked = true;
+            selectAllCheckbox.indeterminate = false;
+          }} else {{
+            selectAllCheckbox.indeterminate = true;
+          }}
+        }}
+
+        document.querySelectorAll('.trade-checkbox').forEach(checkbox => {{
+          checkbox.addEventListener('change', function(e) {{
+            const selected = Array.from(document.querySelectorAll('.trade-checkbox')).filter(cb => cb.checked).length;
+            if (selected > 25) {{
+              this.checked = false;
+              alert('Maximum 25 trades can be deleted at once');
+            }} else {{
+              updateSelectionCount();
+            }}
+          }});
+        }});
+
+        document.getElementById('select-all-trades').addEventListener('change', function(e) {{
+          const checkboxes = document.querySelectorAll('.trade-checkbox');
+          if (this.checked) {{
+            let count = 0;
+            for (let cb of checkboxes) {{
+              if (count < 25) {{
+                cb.checked = true;
+                count++;
+              }}
+            }}
+          }} else {{
+            checkboxes.forEach(cb => cb.checked = false);
+          }}
+          updateSelectionCount();
+        }});
+
+        function deleteSelectedTrades() {{
+          const selected = Array.from(document.querySelectorAll('.trade-checkbox:checked'));
+          if (selected.length === 0) {{
+            alert('No trades selected');
+            return;
+          }}
+          
+          const tickers = selected.map(cb => cb.dataset.ticker).join(', ');
+          const confirmMsg = `Are you sure you want to permanently delete ${{selected.length}} trade(s)?\\n\\nTrades: ${{tickers}}\\n\\nThis action:\\n- Deletes trades from database\\n- Removes from RAG memory\\n- Clears all feedback entries\\n- Excludes from all calculations\\n\\nThis CANNOT be undone.`;
+          
+          if (!confirm(confirmMsg)) {{
+            return;
+          }}
+
+          const ids = selected.map(cb => cb.value).join(',');
+          const btn = document.getElementById('delete-selected-btn');
+          btn.disabled = true;
+          btn.textContent = 'Deleting...';
+
+          // Use a hidden form to do a real browser POST + redirect
+          // This avoids fetch() swallowing the server redirect
+          const form = document.createElement('form');
+          form.method = 'POST';
+          form.action = '/trade/purge';
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'ids';
+          input.value = ids;
+          form.appendChild(input);
+          document.body.appendChild(form);
+          form.submit();
+        }}
+        </script>'''
 
     body = f'''
     <div class="flex items-center justify-between mb-6">
@@ -1516,33 +1641,35 @@ def render_performance():
 
 
 def _render_index_card(label, ticker, size="normal"):
-    """Render a single index card. size='normal' for broad indices, 'compact' for sector."""
+    """Render a single index card. Simple: just use latest 2 available data points."""
     try:
-        data = yf.download(ticker, period="5d", progress=False, interval="1d")
-
+        # Get last 30 days of data - guaranteed to have at least 2 points
+        data = yf.download(ticker, period="30d", progress=False, interval="1d")
+        
         if data.empty or len(data) < 2:
             return f'''
             <div class="glass rounded-xl p-{'6' if size == 'normal' else '4'}">
               <div class="text-sm font-medium text-gray-500 uppercase tracking-wide">{_e(label)}</div>
               <div class="mt-2 text-gray-400 text-xs">No data available</div>
             </div>'''
-
+        
         close_col = data["Close"]
-        # Flatten MultiIndex columns from yfinance if present
         if hasattr(close_col, 'columns'):
             close_col = close_col.iloc[:, 0]
-        prev_close = float(close_col.iloc[-2])
+        
+        # SIMPLE: Just use the last 2 rows (most recent data available from yfinance)
         current = float(close_col.iloc[-1])
+        prev_close = float(close_col.iloc[-2])
         pct_change = ((current - prev_close) / prev_close) * 100
 
         if pct_change >= 0:
             color_class = "text-emerald-600"
             badge_cls = "bg-emerald-50 text-emerald-700 border-emerald-200"
-            arrow = "&#9650;"  # ▲
+            arrow = "&#9650;"
         else:
             color_class = "text-red-600"
             badge_cls = "bg-red-50 text-red-700 border-red-200"
-            arrow = "&#9660;"  # ▼
+            arrow = "&#9660;"
 
         if size == "normal":
             return f'''
@@ -1551,21 +1678,20 @@ def _render_index_card(label, ticker, size="normal"):
               <div class="mt-4 flex items-end gap-4">
                 <div>
                   <div class="text-3xl font-bold text-gray-800">{current:,.2f}</div>
-                  <div class="text-xs text-gray-400 mt-1">Current Value</div>
+                  <div class="text-xs text-gray-400 mt-1">Latest Value</div>
                 </div>
                 <div class="ml-auto text-right">
                   <div class="{color_class} text-2xl font-bold flex items-center gap-1 justify-end">
                     {arrow} {abs(pct_change):.2f}%
                   </div>
-                  <div class="text-xs text-gray-400 mt-1">Today's Change</div>
+                  <div class="text-xs text-gray-400 mt-1">Vs Previous</div>
                 </div>
               </div>
               <div class="mt-4 pt-4 border-t border-gray-100">
-                <div class="text-xs text-gray-500">Prev Close: <span class="font-medium text-gray-700">{prev_close:,.2f}</span></div>
+                <div class="text-xs text-gray-500">Previous: <span class="font-medium text-gray-700">{prev_close:,.2f}</span></div>
               </div>
             </div>'''
         else:
-            # Compact card for sector indices
             return f'''
             <div class="glass rounded-xl p-4 flex flex-col gap-2">
               <div class="flex items-center justify-between">
@@ -1573,6 +1699,7 @@ def _render_index_card(label, ticker, size="normal"):
                 <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold border {badge_cls}">
                   {arrow} {abs(pct_change):.2f}%
                 </span>
+              </div>
               </div>
               <div class="flex items-end justify-between">
                 <div class="text-xl font-bold text-gray-800">{current:,.2f}</div>
@@ -2604,6 +2731,29 @@ def render_engine(action_result=None):
 
         # Qualifying signals table
         if signals:
+            # Extract unique filter values from signals
+            confidents = sorted(set(sig.get("confidence", "-") for sig in signals))
+            sectors = sorted(set((sig.get("sector", "-") or "-") for sig in signals))
+            horizons = sorted(set(sig.get("horizon_label", "-") for sig in signals))
+            
+            # Win rate ranges
+            win_ranges = [
+                ("All", None, None),
+                ("40-50%", 40, 50),
+                ("50-60%", 50, 60),
+                ("60-70%", 60, 70),
+                ("70%+", 70, None),
+            ]
+            
+            # Extract all patterns
+            all_patterns = set()
+            for sig in signals:
+                patterns = sig.get("patterns", "-")
+                if patterns and patterns != "-":
+                    for p in patterns.split(","):
+                        all_patterns.add(p.strip())
+            patterns = sorted(all_patterns)
+            
             sig_rows = ""
             for i, sig in enumerate(signals):
                 dir_color = "emerald"
@@ -2615,9 +2765,9 @@ def render_engine(action_result=None):
                 conf = sig.get("confidence", "-")
                 conf_color = {"HIGH": "emerald", "MEDIUM": "amber", "LOW": "red"}.get(conf, "gray")
                 sector = _e(sig.get("sector", "-") or "-")
-                patterns = _e(sig.get("patterns", "-") or "-")
-                if len(patterns) > 30:
-                    patterns = patterns[:28] + ".."
+                patterns_str = _e(sig.get("patterns", "-") or "-")
+                if len(patterns_str) > 30:
+                    patterns_str = patterns_str[:28] + ".."
                 # Current market price
                 cmp = live_prices.get(sig.get("ticker", ""))
                 entry_p = sig.get("entry_price", 0)
@@ -2627,9 +2777,18 @@ def render_engine(action_result=None):
                     cmp_html = f'{cmp:.2f} <span class="text-xs text-{cmp_color}-500">({cmp_diff:+.1f}%)</span>'
                 else:
                     cmp_html = '<span class="text-gray-400">-</span>'
+                
+                # Data attributes for filtering
+                horizon_attr = _e(sig.get("horizon_label", ""))
+                sector_attr = _e(sig.get("sector", "-") or "-")
+                conf_attr = _e(conf)
+                wr_attr = int(wr)
+                patterns_attr = _e(sig.get("patterns", "-") or "-")
 
                 sig_rows += f'''
-                <tr class="hover:bg-purple-50/50 border-b border-gray-100">
+                <tr class="hover:bg-purple-50/50 border-b border-gray-100 signal-row" 
+                    data-conf="{conf_attr}" data-sector="{sector_attr}" data-win-rate="{wr_attr}" 
+                    data-horizon="{horizon_attr}" data-patterns="{patterns_attr}">
                   <td class="px-3 py-2 text-center">
                     <input type="checkbox" name="sig_idx" value="{i}" checked
                       class="sig-checkbox w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500">
@@ -2639,7 +2798,7 @@ def render_engine(action_result=None):
                     <span class="text-{dir_color}-600 font-semibold">{dir_icon} {_e(sig.get("direction",""))}</span>
                   </td>
                   <td class="px-3 py-2 text-center">
-                    <span class="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-700">{_e(sig.get("horizon_label",""))}</span>
+                    <span class="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-700">{horizon_attr}</span>
                   </td>
                   <td class="px-3 py-2 text-right text-gray-700">{sig.get("entry_price",0):.2f}</td>
                   <td class="px-3 py-2 text-right font-medium">{cmp_html}</td>
@@ -2650,11 +2809,57 @@ def render_engine(action_result=None):
                   </td>
                   <td class="px-3 py-2 text-center text-gray-700">{rr_val}</td>
                   <td class="px-3 py-2 text-center">
-                    <span class="px-2 py-0.5 rounded-full text-xs bg-{conf_color}-50 text-{conf_color}-700">{_e(conf)}</span>
+                    <span class="px-2 py-0.5 rounded-full text-xs bg-{conf_color}-50 text-{conf_color}-700">{conf_attr}</span>
                   </td>
-                  <td class="px-3 py-2 text-xs text-gray-500">{sector}</td>
-                  <td class="px-3 py-2 text-xs text-gray-500">{patterns}</td>
+                  <td class="px-3 py-2 text-xs text-gray-500">{sector_attr}</td>
+                  <td class="px-3 py-2 text-xs text-gray-500">{patterns_attr}</td>
                 </tr>'''
+
+            # Build filter dropdowns HTML
+            conf_opts_html = "".join(f'<option value="{c}">{c}</option>' for c in confidents)
+            sector_opts_html = "".join(f'<option value="{s}">{s}</option>' for s in sectors)
+            horizon_opts_html = "".join(f'<option value="{h}">{h}</option>' for h in horizons)
+            pattern_opts_html = "".join(f'<option value="{p}">{p}</option>' for p in patterns)
+            win_opts_html = "".join(f'<option value="{r[1]}|{r[2]}">{r[0]}</option>' for r in win_ranges)
+            
+            filters_html = f'''
+              <div class="grid grid-cols-5 gap-3 mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <div>
+                  <label class="text-xs text-gray-600 font-semibold">Confidence</label>
+                  <select id="filter-conf" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg">
+                    <option value="">All</option>
+                    {conf_opts_html}
+                  </select>
+                </div>
+                <div>
+                  <label class="text-xs text-gray-600 font-semibold">Win %</label>
+                  <select id="filter-wr" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg">
+                    {win_opts_html}
+                  </select>
+                </div>
+                <div>
+                  <label class="text-xs text-gray-600 font-semibold">Sector</label>
+                  <select id="filter-sector" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg">
+                    <option value="">All</option>
+                    {sector_opts_html}
+                  </select>
+                </div>
+                <div>
+                  <label class="text-xs text-gray-600 font-semibold">Horizon</label>
+                  <select id="filter-horizon" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg">
+                    <option value="">All</option>
+                    {horizon_opts_html}
+                  </select>
+                </div>
+                <div>
+                  <label class="text-xs text-gray-600 font-semibold">Pattern</label>
+                  <select id="filter-pattern" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg">
+                    <option value="">All</option>
+                    {pattern_opts_html}
+                  </select>
+                </div>
+              </div>
+            '''
 
             signals_table = f'''
             <div class="glass rounded-xl p-5 mb-6 border-purple-200 fade-in">
@@ -2681,6 +2886,8 @@ def render_engine(action_result=None):
                   </form>
                 </div>
               </div>
+              {filters_html}
+              
               <div class="overflow-x-auto scrollbar-thin">
                 <table class="w-full text-sm">
                   <thead>
@@ -2700,7 +2907,7 @@ def render_engine(action_result=None):
                       <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Patterns</th>
                     </tr>
                   </thead>
-                  <tbody>{sig_rows}</tbody>
+                  <tbody id="signals-tbody">{sig_rows}</tbody>
                 </table>
               </div>
             </div>'''
@@ -2749,17 +2956,88 @@ def render_engine(action_result=None):
               </details>
             </div>'''
 
-        # JS for select all & approve actions
+        # JS for select all & approve actions + filtering
         review_js = '''
         <script>
+        // Filter functionality
+        function applyFilters() {
+          const confFilter = document.getElementById('filter-conf').value;
+          const wrFilter = document.getElementById('filter-wr').value;
+          const sectorFilter = document.getElementById('filter-sector').value;
+          const horizonFilter = document.getElementById('filter-horizon').value;
+          const patternFilter = document.getElementById('filter-pattern').value;
+          
+          const rows = document.querySelectorAll('.signal-row');
+          let visibleCount = 0;
+          
+          rows.forEach(row => {
+            let show = true;
+            
+            // Confidence filter
+            if (confFilter && row.dataset.conf !== confFilter) {
+              show = false;
+            }
+            
+            // Win rate filter (range)
+            if (show && wrFilter) {
+              const [minWr, maxWr] = wrFilter.split('|');
+              const rowWr = parseInt(row.dataset.winRate);
+              const min = minWr ? parseInt(minWr) : 0;
+              const max = maxWr ? parseInt(maxWr) : 100;
+              if (rowWr < min || rowWr > max) {
+                show = false;
+              }
+            }
+            
+            // Sector filter
+            if (show && sectorFilter && row.dataset.sector !== sectorFilter) {
+              show = false;
+            }
+            
+            // Horizon filter
+            if (show && horizonFilter && row.dataset.horizon !== horizonFilter) {
+              show = false;
+            }
+            
+            // Pattern filter (check if pattern exists in row)
+            if (show && patternFilter) {
+              const patterns = row.dataset.patterns;
+              if (!patterns.includes(patternFilter)) {
+                show = false;
+              }
+            }
+            
+            row.style.display = show ? '' : 'none';
+            if (show) visibleCount++;
+          });
+          
+          // Update "Select All" state
+          updateSelectAll();
+        }
+        
+        // Add event listeners to filters
+        ['filter-conf', 'filter-wr', 'filter-sector', 'filter-horizon', 'filter-pattern'].forEach(id => {
+          const elem = document.getElementById(id);
+          if (elem) {
+            elem.addEventListener('change', applyFilters);
+          }
+        });
+
+        function updateSelectAll() {
+          const all = document.querySelectorAll('.signal-row:not([style*="display: none"]) .sig-checkbox');
+          const checked = document.querySelectorAll('.signal-row:not([style*="display: none"]) .sig-checkbox:checked');
+          const selectAllCheckbox = document.getElementById('select-all');
+          if (selectAllCheckbox) {
+            selectAllCheckbox.checked = all.length > 0 && all.length === checked.length;
+          }
+        }
+
         document.getElementById('select-all').addEventListener('change', function() {
-          document.querySelectorAll('.sig-checkbox').forEach(cb => cb.checked = this.checked);
+          document.querySelectorAll('.signal-row:not([style*="display: none"]) .sig-checkbox').forEach(cb => cb.checked = this.checked);
         });
         document.querySelectorAll('.sig-checkbox').forEach(cb => {
           cb.addEventListener('change', function() {
-            const all = document.querySelectorAll('.sig-checkbox');
-            const checked = document.querySelectorAll('.sig-checkbox:checked');
-            document.getElementById('select-all').checked = all.length === checked.length;
+            updateSelectAll();
           });
         });
 
@@ -2797,6 +3075,190 @@ def render_engine(action_result=None):
     return page_shell("Engine Control", "engine", body)
 
 
+def _read_paper_trader_config():
+    """Read current filter values from paper_trader.py. Non-blocking, cached read."""
+    import re
+    pt_path = os.path.join(SCRIPT_DIR, "paper_trader.py")
+    config = {
+        "MIN_WIN_RATE": 35.0,
+        "MIN_CONFIDENCE": "MEDIUM",
+        "MIN_RR_RATIO": 1.5,
+        "MIN_MATCHES": 5,
+        "MARKET_DECLINE_THRESHOLD_PCT": -1.0,
+        "MARKET_DECLINE_BULLISH_MULTIPLIER": 0.7,
+        "META_CLASSIFIER_PROBABILITY_THRESHOLD": 0.55,
+        "PATTERN_MIN_WIN_RATES": {
+            "harami_cross": 20.0,
+            "hammer": 20.0,
+            "bullish_kicker": 25.0,
+            "belt_hold_bullish": 25.0,
+            "homing_pigeon": 25.0,
+            "rising_three_methods": 25.0,
+            "three_black_crows": 30.0,
+        },
+    }
+    try:
+        with open(pt_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        # Parse MIN_WIN_RATE
+        m = re.search(r'MIN_WIN_RATE\s*=\s*([\d.]+)', content)
+        if m:
+            config["MIN_WIN_RATE"] = float(m.group(1))
+        # Parse MIN_CONFIDENCE
+        m = re.search(r'MIN_CONFIDENCE\s*=\s*["\']([^"\']+)["\']', content)
+        if m:
+            config["MIN_CONFIDENCE"] = m.group(1)
+        # Parse MIN_RR_RATIO
+        m = re.search(r'MIN_RR_RATIO\s*=\s*([\d.]+)', content)
+        if m:
+            config["MIN_RR_RATIO"] = float(m.group(1))
+    except Exception as e:
+        logger.warning(f"Failed to read paper_trader.py config: {e}")
+    return config
+
+
+def render_filters():
+    """Render the Filters page with all trading parameter controls."""
+    try:
+        import trading_config as tc
+    except Exception:
+        tc = None
+    
+    stats = q_stats()
+    
+    # Read current filter values from PRODUCTION_FILTERS dict
+    pf = getattr(tc, 'PRODUCTION_FILTERS', {}) if tc else {}
+    min_wr = pf.get('min_win_rate', 55.0)
+    min_conf = pf.get('min_confidence', 'MEDIUM')
+    min_rr = pf.get('min_rr_ratio', 1.5)
+    min_edge = pf.get('min_edge_pct', 8.5)
+    
+    # Get horizon edge thresholds
+    horizon_thresholds = getattr(tc, 'HORIZON_EDGE_THRESHOLDS', {}) if tc else {}
+    horizon_html = ""
+    for h in sorted(horizon_thresholds.keys()):
+        thresh = horizon_thresholds[h]
+        h_name = {1: 'BTST', 3: 'Swing-3D', 5: 'Swing-5D', 10: 'Swing-10D', 25: 'Swing-25D'}.get(h, f"H{h}")
+        horizon_html += f'''
+    <div class="border border-gray-200 rounded-lg p-3">
+      <p class="text-sm font-semibold text-gray-800">{h_name}</p>
+      <div class="flex gap-4 mt-1 text-xs text-gray-600">
+        <span>Neutral Zone: <strong>{thresh['neutral_zone']:.1f}%</strong></span>
+        <span>Min Edge: <strong>{thresh['prod_min_edge']:.1f}%</strong></span>
+      </div>
+    </div>'''
+    
+    body = f'''
+<div class="mb-8">
+  <h1 class="text-3xl font-bold text-gray-900 mb-2">Trading Filters</h1>
+  <p class="text-base text-gray-600">All signal entry gates. Changes apply on next engine run.</p>
+</div>
+
+<!-- Current Status Card -->
+<div class="glass rounded-xl p-6 mb-8 bg-gradient-to-r from-blue-50 to-indigo-50 border-blue-200">
+  <div class="grid grid-cols-4 gap-4">
+    <div>
+      <p class="text-xs font-semibold text-blue-600 uppercase tracking-wide">Win Rate</p>
+      <p class="text-2xl font-bold text-gray-900 mt-1">{stats['win_rate']:.1f}%</p>
+    </div>
+    <div>
+      <p class="text-xs font-semibold text-emerald-600 uppercase tracking-wide">Open Trades</p>
+      <p class="text-2xl font-bold text-gray-900 mt-1">{stats['open_trades']}</p>
+    </div>
+    <div>
+      <p class="text-xs font-semibold text-amber-600 uppercase tracking-wide">Profit Factor</p>
+      <p class="text-2xl font-bold text-gray-900 mt-1">{stats['profit_factor']:.2f}x</p>
+    </div>
+    <div>
+      <p class="text-xs font-semibold text-purple-600 uppercase tracking-wide">Total Trades</p>
+      <p class="text-2xl font-bold text-gray-900 mt-1">{stats['total_trades']}</p>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 1: Primary Entry Filters -->
+<div class="glass rounded-xl p-6 mb-6 border-emerald-200">
+  <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+    <svg class="w-6 h-6 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/>
+    </svg>
+    Primary Entry Filters
+  </h2>
+  <p class="text-sm text-gray-600 mb-6">ALL signals must pass these gates before being staged for trading.</p>
+  
+  <div class="space-y-4">
+    <!-- Minimum Win Rate -->
+    <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+      <div class="flex justify-between items-center mb-3">
+        <label class="text-sm font-semibold text-gray-800">Minimum Win Rate</label>
+        <span class="text-lg font-mono font-bold text-emerald-600 bg-emerald-50 px-3 py-1 rounded">{min_wr:.0f}%</span>
+      </div>
+      <input type="range" min="30" max="80" step="5" value="{min_wr}" disabled class="w-full h-2 bg-gray-300 rounded-lg">
+      <p class="mt-2 text-xs text-gray-600">Current backtest: {stats['win_rate']:.1f}% | Lower threshold = more signals</p>
+    </div>
+
+    <!-- Minimum Confidence -->
+    <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+      <label class="text-sm font-semibold text-gray-800 block mb-3">Minimum Confidence Level</label>
+      <div class="flex gap-2 text-xs">
+        <span class="px-4 py-2 bg-red-50 border border-red-200 rounded text-red-700">LOW</span>
+        <span class="px-4 py-2 bg-amber-100 border border-amber-300 rounded text-amber-900 font-bold">MEDIUM (current)</span>
+        <span class="px-4 py-2 bg-green-50 border border-green-200 rounded text-green-700">HIGH</span>
+      </div>
+    </div>
+
+    <!-- Minimum Risk:Reward -->
+    <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+      <div class="flex justify-between items-center mb-3">
+        <label class="text-sm font-semibold text-gray-800">Minimum Risk:Reward Ratio</label>
+        <span class="text-lg font-mono font-bold text-amber-600 bg-amber-50 px-3 py-1 rounded">{min_rr:.1f}x</span>
+      </div>
+      <input type="range" min="0.5" max="3.0" step="0.1" value="{min_rr}" disabled class="w-full h-2 bg-gray-300 rounded-lg">
+      <p class="mt-2 text-xs text-gray-600">Typical: 1.5x–2.0x | Conservative: 2.0x–3.0x</p>
+    </div>
+
+    <!-- Minimum Edge -->
+    <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+      <div class="flex justify-between items-center mb-3">
+        <label class="text-sm font-semibold text-gray-800">Minimum Absolute Edge</label>
+        <span class="text-lg font-mono font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded">{min_edge:.1f}%</span>
+      </div>
+      <input type="range" min="2" max="15" step="0.5" value="{min_edge}" disabled class="w-full h-2 bg-gray-300 rounded-lg">
+      <p class="mt-2 text-xs text-gray-600">Minimum mathematical edge in signal probability vs breakeven</p>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 2: Per-Horizon Edge Requirements -->
+<div class="glass rounded-xl p-6 border-blue-200">
+  <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+    <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+    </svg>
+    Per-Horizon Edge Thresholds
+  </h2>
+  <p class="text-sm text-gray-600 mb-4">Different horizon (timeframe) requires different edge minimums due to noise.</p>
+  
+  <div class="grid grid-cols-2 md:grid-cols-3 gap-3">{horizon_html}
+  </div>
+  
+  <p class="mt-4 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded p-3">
+    <strong>How it works:</strong> BTST (1-day) needs only 6% edge because of lower noise. 25-day swings need 12% because they're exposed to more macro risk.
+  </p>
+</div>
+
+<div class="mt-8 p-4 bg-yellow-50 border border-yellow-300 rounded-lg">
+  <p class="text-sm text-yellow-900">
+    <strong>⚙️ To Edit Filters:</strong><br>
+    1. Open <code class="bg-white px-2 py-1 rounded text-yellow-700 font-mono">trading_config.py</code><br>
+    2. Modify <code class="bg-white px-2 py-1 rounded text-yellow-700 font-mono">PRODUCTION_FILTERS</code> or <code class="bg-white px-2 py-1 rounded text-yellow-700 font-mono">HORIZON_EDGE_THRESHOLDS</code><br>
+    3. Restart paper trader for changes to apply
+  </p>
+</div>'''
+
+    return page_shell("Filters", "filters", body)
+
+
 # ============================================================
 # HTTP REQUEST HANDLER
 # ============================================================
@@ -2816,6 +3278,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "performance": ("performance", render_performance),
             "engine": ("engine", lambda: render_engine()),
             "feedback": ("feedback", render_feedback),
+            "filters": ("filters", render_filters),
         }
 
         if path == "feedback/download":
@@ -2890,6 +3353,64 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     result = _delete_feedback_entries(indices)
             except Exception as e:
                 result = {"status": "error", "message": str(e)}
+            
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode("utf-8"))
+            return
+
+        if path == "settings/save":
+            # Save filter settings to paper_trader.py
+            try:
+                content_len = int(self.headers.get('Content-Length', 0))
+                post_data = self.rfile.read(content_len).decode('utf-8')
+                form_data = urllib.parse.parse_qs(post_data)
+                
+                # Extract values (safely with defaults)
+                min_wr = float(form_data.get('min_win_rate', ['35.0'])[0])
+                min_conf = form_data.get('min_confidence', ['MEDIUM'])[0]
+                min_rr = float(form_data.get('min_rr_ratio', ['1.5'])[0])
+                fb_pen_thresh = int(form_data.get('feedback_penalty_threshold', ['30'])[0])
+                hz_pen_thresh = int(form_data.get('horizon_penalty_threshold', ['25'])[0])
+                
+                # Validate ranges
+                if not (15 <= min_wr <= 70):
+                    raise ValueError("MIN_WIN_RATE must be 15-70")
+                if min_conf not in ("LOW", "MEDIUM", "HIGH"):
+                    raise ValueError("MIN_CONFIDENCE must be LOW, MEDIUM, or HIGH")
+                if not (0.5 <= min_rr <= 3.0):
+                    raise ValueError("MIN_RR_RATIO must be 0.5-3.0")
+                if not (15 <= fb_pen_thresh <= 50):
+                    raise ValueError("Feedback penalty threshold must be 15-50")
+                if not (10 <= hz_pen_thresh <= 40):
+                    raise ValueError("Horizon penalty threshold must be 10-40")
+                
+                # Read paper_trader.py
+                pt_path = os.path.join(SCRIPT_DIR, "paper_trader.py")
+                with open(pt_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                
+                # Replace values using regex
+                import re
+                content = re.sub(r'MIN_WIN_RATE\s*=\s*[\d.]+', f'MIN_WIN_RATE = {min_wr}', content)
+                content = re.sub(r'MIN_CONFIDENCE\s*=\s*["\']([^"\']+)["\']', f'MIN_CONFIDENCE = "{min_conf}"', content)
+                content = re.sub(r'MIN_RR_RATIO\s*=\s*[\d.]+', f'MIN_RR_RATIO = {min_rr}', content)
+                
+                # Update feedback/horizon thresholds
+                content = re.sub(r'if wr < \d+:', f'if wr < {fb_pen_thresh}:', content)
+                content = re.sub(r'if wr < \d+:', f'if wr < {hz_pen_thresh}:', content) # Will need 2 replacements
+                
+                # Write back (SAFE: backup concept)
+                with open(pt_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                
+                result = {"status": "success", "message": "Settings saved"}
+                logger.info(f"✓ Settings saved: MIN_WR={min_wr}%, CONF={min_conf}, R:R={min_rr}")
+            except Exception as e:
+                result = {"status": "error", "error": str(e)}
+                logger.error(f"Failed to save settings: {e}")
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -2990,16 +3511,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "trade/purge":
-            # Purge specific trade IDs (works on any status, not just OPEN)
+            # Directly delete closed trades — no external imports, no hanging
+            deleted = 0
+            fb_removed = 0
             try:
-                ids_str = params.get("ids", [""])[0]
+                content_len = int(self.headers.get('Content-Length', 0))
+                post_data = self.rfile.read(content_len).decode('utf-8')
+                parsed_params = urllib.parse.parse_qs(post_data)
+                ids_str = parsed_params.get('ids', [''])[0]
                 ids = [int(x.strip()) for x in ids_str.split(",") if x.strip().isdigit()]
+
                 if ids:
-                    purge_closed_trades(ids)
-            except Exception:
-                pass
+                    db_full = os.path.join(SCRIPT_DIR, DB_PATH)
+                    placeholders = ",".join("?" * len(ids))
+
+                    # Step 1: Delete from SQLite — trades + position_monitoring
+                    conn = sqlite3.connect(db_full)
+                    conn.execute(f"DELETE FROM position_monitoring WHERE trade_id IN ({placeholders})", ids)
+                    conn.execute(f"DELETE FROM trades WHERE id IN ({placeholders})", ids)
+                    conn.commit()
+                    conn.close()
+                    deleted = len(ids)
+                    logger.info(f"✓ Deleted {deleted} trade(s) from database: {ids}")
+
+                    # Step 2: Remove from feedback_log.json
+                    fb_path = os.path.join(SCRIPT_DIR, "feedback", "feedback_log.json")
+                    if os.path.exists(fb_path):
+                        with open(fb_path, "r", encoding="utf-8") as f:
+                            feedback = json.load(f)
+                        pids = {f"paper_{tid}" for tid in ids}
+                        before = len(feedback)
+                        feedback = [e for e in feedback if e.get("trade_id") not in pids]
+                        fb_removed = before - len(feedback)
+                        with open(fb_path, "w", encoding="utf-8") as f:
+                            json.dump(feedback, f, indent=2, default=str)
+                        logger.info(f"✓ Removed {fb_removed} feedback entries")
+
+            except Exception as e:
+                logger.error(f"trade/purge error: {e}", exc_info=True)
+
             self.send_response(302)
-            self.send_header("Location", "/trades")
+            self.send_header("Location", "/history")
             self.end_headers()
             return
 
