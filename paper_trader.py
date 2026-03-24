@@ -708,6 +708,14 @@ class PaperTradeDB:
         except sqlite3.IntegrityError:
             pass
 
+    def update_scan_entered(self, scan_date: str, entered: int):
+        """Update trades_entered on an existing scan_log row (used after manual approval)."""
+        self.conn.execute(
+            "UPDATE scan_log SET trades_entered = trades_entered + ? WHERE scan_date = ?",
+            (entered, scan_date)
+        )
+        self.conn.commit()
+
     def save_daily_summary(self, s: dict):
         try:
             self.conn.execute("""
@@ -1661,12 +1669,16 @@ class PaperTrader:
 
         discarded = len(signals) - len(approved_indices)
 
-        # Log the scan now that we've committed
+        # Update the scan_log row that scan_preview already inserted with entered=0
         scan_date_str = staging.get("scan_date", date.today().isoformat())
         total_signals = staging.get("total_signals", 0)
         errors = staging.get("errors", 0)
         duration = staging.get("duration", 0)
-        self.db.log_scan(scan_date_str, len(SCAN_TICKERS), total_signals, entered, errors, duration)
+        # If the row exists (from scan_preview), increment trades_entered; otherwise insert fresh
+        if self.db.was_scanned(scan_date_str):
+            self.db.update_scan_entered(scan_date_str, entered)
+        else:
+            self.db.log_scan(scan_date_str, len(SCAN_TICKERS), total_signals, entered, errors, duration)
 
         # Remove staging file
         os.remove(PENDING_SIGNALS_FILE)
@@ -2758,9 +2770,9 @@ if __name__ == "__main__":
     if cmd == "scan":
         # MANUAL APPROVAL MODE: scan finds signals, doesn't enter them
         result = engine.scan_preview(date.today())
-        print(f"\n✓ Scan complete: {result.get('signals_found', 0)} signal(s) staged")
-        print(f"✓ Review signals: http://localhost:8521/engine")
-        print(f"✓ Then approve: python paper_trader.py approve")
+        print(f"\n[OK] Scan complete: {result.get('signals_found', 0)} signal(s) staged")
+        print(f"[OK] Review signals: http://localhost:8521/engine")
+        print(f"[OK] Then approve: python paper_trader.py approve")
     elif cmd == "scan_preview":
         engine.scan_preview(date.today())
     elif cmd == "approve":
@@ -2769,11 +2781,11 @@ if __name__ == "__main__":
             indices = [int(x) for x in sys.argv[2].split(",") if x.strip().isdigit()]
             result = engine.approve_signals(indices)
         else:
-            print("\n🔔 Approving ALL pending signals...")
+            print("\nApproving ALL pending signals...")
             result = engine.approve_signals()  # approve all
-        print(f"✓ Trades entered: {result.get('entered', 0)}")
-        print(f"✓ Duplicates skipped: {result.get('duplicates', 0)}")
-        print(f"✓ Discarded: {result.get('discarded', 0)}")
+        print(f"[OK] Trades entered: {result.get('entered', 0)}")
+        print(f"[OK] Duplicates skipped: {result.get('duplicates', 0)}")
+        print(f"[OK] Discarded: {result.get('discarded', 0)}")
     elif cmd == "discard":
         if os.path.exists(PENDING_SIGNALS_FILE):
             os.remove(PENDING_SIGNALS_FILE)

@@ -862,6 +862,18 @@ class StatisticalPredictor:
         """
         from trading_config import MIN_ENSEMBLE_PATTERNS, ALLOWED_TIERS_ENSEMBLE, ENSEMBLE_TIER3_CONFIDENCE_PENALTY
         
+        # FIX: Read MIN_WIN_RATE from paper_trader.py at runtime to respect relaxed filter values
+        # Use a threshold 10% lower than MIN_WIN_RATE to pass early screening but still catch very low WR
+        try:
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from paper_trader import MIN_WIN_RATE
+            min_wr_threshold = MIN_WIN_RATE - 10.0  # e.g., 35% - 10% = 25% minimum for ensemble screening
+        except Exception as e:
+            print(f"⚠️ Could not load MIN_WIN_RATE from paper_trader: {e}. Using default 45%")
+            min_wr_threshold = 45.0
+        
         patterns = [p.strip() for p in patterns_str.split(",") if p.strip()]
         if not patterns:
             return None
@@ -875,7 +887,7 @@ class StatisticalPredictor:
         predictions = {}
         for p in patterns:
             pred = self.predict(p, **kwargs)
-            if pred and pred.get("win_rate", 0) > 45:  # Only high-confidence patterns
+            if pred and pred.get("win_rate", 0) > min_wr_threshold:  # Dynamic threshold based on MIN_WIN_RATE
                 predictions[p] = pred
 
         if len(predictions) < MIN_ENSEMBLE_PATTERNS:

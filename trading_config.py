@@ -275,7 +275,7 @@ SLIPPAGE_COMMISSION_PCT = 0.05
 # These must be used identically in both backtest_walkforward.py and
 # paper_trader.py so that OOS results predict live performance.
 PRODUCTION_FILTERS = {
-    "min_win_rate": 55.0,       # minimum predicted win rate %
+    "min_win_rate": 45.0,       # minimum predicted win rate %
     "min_confidence": "MEDIUM", # minimum confidence level
     "min_rr_ratio": 1.5,       # minimum reward-to-risk
     "min_edge_pct": 8.5,       # minimum absolute edge %

@@ -360,6 +360,7 @@ def _engine_worker(action, extra_args=None):
     try:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         
         # Use absolute path to virtual environment Python
         venv_python = r"C:\Users\tyagipra\Coding\Nifty_Data\.venv\Scripts\python.exe"
