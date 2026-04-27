@@ -2091,7 +2091,19 @@ def render_feedback():
     sh_quality = "✓ Working" if sh['gap'] >= 10 else ("⚠ Moderate" if sh['gap'] >= 5 else "⚠ Weak")
     sh_quality_color = "emerald" if sh['gap'] >= 10 else ("amber" if sh['gap'] >= 5 else "red")
     gap_color = "emerald" if sh['gap'] > 0 else "red"
-    gap_msg = "✓ Filters are working as intended." if sh['gap'] >= 10 else ("⚠ Monitor filter effectiveness." if sh['gap'] >= 5 else "⚠ Consider loosening filters.")
+    # Dynamic gap message based on gap sign (positive = real outperforms, negative = shadow outperforms)
+    if sh['gap'] >= 10:
+        gap_msg = "✓ Filters are working as intended (real trades significantly outperform filtered signals)."
+        gap_subtitle = "Real outperforms"
+    elif sh['gap'] >= 5:
+        gap_msg = "⚠ Monitor filter effectiveness (real trades moderately outperform filtered signals)."
+        gap_subtitle = "Real outperforms"
+    elif sh['gap'] > 0:
+        gap_msg = "⚠ Horizon composition issue detected (real trades slightly underperform). Check real vs shadow horizon mix."
+        gap_subtitle = "Real slightly ahead"
+    else:
+        gap_msg = "⚠ Horizon composition issue detected (filtered signals outperform real trades). Recent filter changes should improve this."
+        gap_subtitle = "Shadow outperforms"
     
     # Horizon comparison rows
     hz_rows = ""
@@ -2138,14 +2150,14 @@ def render_feedback():
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         {stat_card("Shadow Win Rate", f"{sh['shadow_wr']:.1f}%", f"{sh['shadow_closed']} closed", "amber")}
         {stat_card("Real Win Rate", f"{sh['real_wr']:.1f}%", f"{sh['real_total']} closed", "green")}
-        {stat_card("Filter Gap", f"{sh['gap']:+.1f}pp", "Real outperforms", gap_color)}
+        {stat_card("Filter Gap", f"{sh['gap']:+.1f}pp", gap_subtitle, gap_color)}
         {stat_card("Filter Efficiency", f"{sh['efficiency']:.2f}x", "Real / Shadow ratio", sh_quality_color)}
       </div>
       
       <div class="mb-4">
         <h4 class="text-sm font-semibold text-gray-700 mb-2">Interpretation</h4>
         <div class="text-sm text-gray-600 bg-{sh_quality_color}-50 border border-{sh_quality_color}-200 rounded-lg p-4">
-          {sh_quality}: Filtered signals underperform real trades by <span class="font-semibold">{sh['gap']:.1f} percentage points</span>.
+          {sh_quality}: {'Filtered signals underperform real trades by' if sh['gap'] >= 0 else 'Real trades underperform filtered signals by'} <span class="font-semibold">{abs(sh['gap']):.1f} percentage points</span>.
           Your filters are <span class="font-semibold">{sh['efficiency']:.2f}x more effective</span> than random selections.
           {gap_msg}
         </div>
@@ -3088,15 +3100,6 @@ def _read_paper_trader_config():
         "MARKET_DECLINE_THRESHOLD_PCT": -1.0,
         "MARKET_DECLINE_BULLISH_MULTIPLIER": 0.7,
         "META_CLASSIFIER_PROBABILITY_THRESHOLD": 0.55,
-        "PATTERN_MIN_WIN_RATES": {
-            "harami_cross": 20.0,
-            "hammer": 20.0,
-            "bullish_kicker": 25.0,
-            "belt_hold_bullish": 25.0,
-            "homing_pigeon": 25.0,
-            "rising_three_methods": 25.0,
-            "three_black_crows": 30.0,
-        },
     }
     try:
         with open(pt_path, "r", encoding="utf-8") as f:

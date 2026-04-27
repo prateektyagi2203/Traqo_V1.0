@@ -142,18 +142,6 @@ MIN_MATCHES = 5
 MARKET_DECLINE_THRESHOLD_PCT = -1.0  # If NIFTY50 daily return < -1%, be cautious with bullish
 MARKET_DECLINE_BULLISH_MULTIPLIER = 0.7  # Scale down bullish signal confidence
 
-# Pattern-specific minimum win rates (from Feb 27 analysis)
-# Current live patterns have 10-30% win rate - too low!
-PATTERN_MIN_WIN_RATES = {
-    "harami_cross": 20.0,           # Lowered from 30.0 (Current: 15%, enabling more signals)
-    "hammer": 20.0,                 # Lowered from 30.0 (Current: 16.7%)
-    "bullish_kicker": 25.0,         # Lowered from 35.0 (Current: 24.2%)
-    "belt_hold_bullish": 25.0,      # Lowered from 35.0 (Current: 24.6%)
-    "homing_pigeon": 25.0,          # Lowered from 35.0 (Current: 10% - worst performer)
-    "rising_three_methods": 25.0,   # Lowered from 35.0 (Current: 25%)
-    "three_black_crows": 30.0,      # Lowered from 40.0 (Current: 30% - slightly better)
-}
-
 # ML classifier gating: only accept trades > this probability
 META_CLASSIFIER_PROBABILITY_THRESHOLD = 0.55  # FIX #3: Filter low-confidence trades
 
@@ -165,6 +153,10 @@ HORIZON_CONFIG = {
     10: {"sl_mult_scale": 1.2,  "sl_cap": 5.0, "rr_min": 2.0, "label": "Swing_10d"},
     # 25d removed from scope — not in RAG target horizons
 }
+
+# Horizons where real-capital entry is DISABLED — tracked as shadow trades only
+# Swing_10d disabled: 8.3% WR in Mar-Apr 2026 (vs 59.7% for BTST_1d) — broken calibration
+SHADOW_ONLY_HORIZONS = {"Swing_10d"}
 
 # All stocks to scan
 SCAN_TICKERS = list(dict.fromkeys([
@@ -1511,6 +1503,10 @@ class PaperTrader:
                     if rr < rr_threshold:
                         skip_reasons.append(f"R:R {rr:.1f}x < {rr_threshold}x")
                     
+                    # NEW: Shadow-only horizon check — route to shadow without using real capital
+                    if h_label in SHADOW_ONLY_HORIZONS:
+                        skip_reasons.append(f"Shadow-only horizon — {h_label} disabled for real trading (WR < 15%)")
+
                     # NEW (Improvement #5): Per-horizon edge filtering instead of global threshold
                     edge = result.get("edge", 0)
                     from trading_config import HORIZON_EDGE_THRESHOLDS
