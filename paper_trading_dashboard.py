@@ -19,7 +19,7 @@ import subprocess
 import urllib.parse
 import threading
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
@@ -1373,10 +1373,21 @@ def render_history():
         </div>'''
     else:
         rows = ""
+        cutoff_date = (date.today() - timedelta(days=5)).isoformat()
         for t in trades:
             ret = t.get("actual_return_pct", 0) or 0
             ret_cls = "text-emerald-600" if ret >= 0 else "text-red-600"
-            dir_bdg = badge(t["direction"][0] if t.get("direction") else "?", "bullish")
+            
+            # Win% - Show only for last 5 days of trades, otherwise blank
+            win_pct = t.get("predicted_win_rate")
+            entry_dt = t.get("entry_date", "")
+            if entry_dt >= cutoff_date and win_pct is not None:
+                win_pct_str = f"{win_pct:.0f}%"
+                win_pct_color = "text-emerald-600" if win_pct >= 50 else "text-amber-600"
+            else:
+                win_pct_str = "—"
+                win_pct_color = "text-gray-400"
+            
             trade_id = t.get("id", 0)
             rows += f'''
             <tr class="hover:bg-blue-50/50 transition border-b border-gray-100" data-trade-id="{trade_id}">
@@ -1386,7 +1397,7 @@ def render_history():
               <td class="px-4 py-3">{status_badge(t["status"])}</td>
               <td class="px-4 py-3 font-semibold text-gray-800">{_e(_ticker(t["ticker"]))}</td>
               <td class="px-4 py-3 text-gray-600">{_e(t.get("horizon_label",""))}</td>
-              <td class="px-4 py-3">{dir_bdg}</td>
+              <td class="px-4 py-3 text-center font-semibold {win_pct_color}">{win_pct_str}</td>
               <td class="px-4 py-3 text-right font-mono text-gray-600">{_price(t["entry_price"])}</td>
               <td class="px-4 py-3 text-right font-mono text-gray-600">{_price(t.get("exit_price"))}</td>
               <td class="px-4 py-3 text-right font-mono font-semibold {ret_cls}">{_pct(ret)}</td>
@@ -1415,7 +1426,7 @@ def render_history():
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Stock</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Horizon</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Dir</th>
+                <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Win%</th>
                 <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Entry</th>
                 <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Exit</th>
                 <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Return</th>
