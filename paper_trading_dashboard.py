@@ -239,7 +239,7 @@ def q_open_trades():
 
 def q_closed_trades():
     c = get_db()
-    rows = [dict(r) for r in c.execute("SELECT * FROM trades WHERE status NOT IN ('OPEN','CANCELLED') ORDER BY exit_date DESC LIMIT 200").fetchall()]
+    rows = [dict(r) for r in c.execute("SELECT * FROM trades WHERE status NOT IN ('OPEN','CANCELLED') ORDER BY exit_date DESC").fetchall()]
     c.close()
     return rows
 
@@ -908,6 +908,86 @@ def render_dashboard():
     return page_shell("Dashboard", "dashboard", body)
 
 
+def _history_xlsx_bytes():
+    """Generate Excel (.xlsx) bytes for all closed trades."""
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    trades = q_closed_trades()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Closed Trades"
+
+    headers = [
+        "ID", "Ticker", "Status", "Horizon", "Direction",
+        "Entry Price", "Exit Price", "Target Price", "SL Price",
+        "Target %", "SL %", "RR Ratio",
+        "Predicted Win%", "Actual Return%",
+        "Exit Reason", "Entry Date", "Exit Date",
+        "Patterns", "Confidence", "Sector",
+    ]
+
+    # Header row styling
+    hdr_font  = Font(bold=True, color="FFFFFF")
+    hdr_fill  = PatternFill("solid", fgColor="2563EB")  # blue-600
+    hdr_align = Alignment(horizontal="center")
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font  = hdr_font
+        cell.fill  = hdr_fill
+        cell.alignment = hdr_align
+
+    win_fill  = PatternFill("solid", fgColor="D1FAE5")  # green-100
+    loss_fill = PatternFill("solid", fgColor="FEE2E2")  # red-100
+
+    for t in trades:
+        status = t.get("status", "")
+        row = [
+            t.get("id"),
+            _ticker(t.get("ticker", "")),
+            status,
+            t.get("horizon_label", ""),
+            t.get("direction", ""),
+            t.get("entry_price"),
+            t.get("exit_price"),
+            t.get("target_price"),
+            t.get("sl_price"),
+            t.get("target_pct"),
+            t.get("sl_pct"),
+            t.get("rr_ratio"),
+            t.get("predicted_win_rate"),
+            t.get("actual_return_pct"),
+            t.get("exit_reason", ""),
+            t.get("entry_date", ""),
+            t.get("exit_date", ""),
+            t.get("patterns", ""),
+            t.get("confidence", ""),
+            t.get("sector", ""),
+        ]
+        ws.append(row)
+        # Colour row by outcome
+        if status in ("WON", "EXPIRED_WIN"):
+            fill = win_fill
+        elif status in ("LOST", "EXPIRED_LOSS"):
+            fill = loss_fill
+        else:
+            fill = None
+        if fill:
+            for cell in ws[ws.max_row]:
+                cell.fill = fill
+
+    # Auto-width columns
+    for col in ws.columns:
+        max_len = max((len(str(cell.value)) if cell.value is not None else 0) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def render_signals():
     trades = q_today_trades()
     entry_date = trades[0]["entry_date"] if trades else date.today().isoformat()
@@ -1357,13 +1437,26 @@ def render_history():
     wins = sum(1 for t in trades if t["status"] in ("WON", "EXPIRED_WIN"))
     losses = sum(1 for t in trades if t["status"] in ("LOST", "EXPIRED_LOSS"))
     wr = (wins / len(trades) * 100) if trades else 0
+    wr_color = "text-emerald-600" if wr >= 55 else "text-amber-600" if wr >= 45 else "text-red-600"
 
     summary = f'''
     <div class="grid grid-cols-4 gap-4 mb-6">
-      {stat_card("Total", len(trades), "", "indigo")}
-      {stat_card("Wins", wins, "", "green")}
-      {stat_card("Losses", losses, "", "red")}
-      {stat_card("Win Rate", f"{wr:.1f}%", "", "green" if wr >= 55 else "amber")}
+      <div class="rounded-xl bg-white border border-gray-200 shadow-sm p-5">
+        <p class="text-xs font-medium uppercase tracking-wider text-blue-600">Total</p>
+        <p class="mt-2 text-2xl font-bold text-gray-800" id="hist-total">{len(trades)}</p>
+      </div>
+      <div class="rounded-xl bg-white border border-emerald-200 shadow-sm p-5">
+        <p class="text-xs font-medium uppercase tracking-wider text-emerald-600">Wins</p>
+        <p class="mt-2 text-2xl font-bold text-gray-800" id="hist-wins">{wins}</p>
+      </div>
+      <div class="rounded-xl bg-white border border-red-200 shadow-sm p-5">
+        <p class="text-xs font-medium uppercase tracking-wider text-red-600">Losses</p>
+        <p class="mt-2 text-2xl font-bold text-gray-800" id="hist-losses">{losses}</p>
+      </div>
+      <div class="rounded-xl bg-white border border-amber-200 shadow-sm p-5">
+        <p class="text-xs font-medium uppercase tracking-wider text-amber-600">Win Rate</p>
+        <p class="mt-2 text-2xl font-bold {wr_color}" id="hist-wr">{wr:.1f}%</p>
+      </div>
     </div>'''
 
     if not trades:
@@ -1373,35 +1466,54 @@ def render_history():
         </div>'''
     else:
         rows = ""
-        cutoff_date = (date.today() - timedelta(days=5)).isoformat()
         for t in trades:
             ret = t.get("actual_return_pct", 0) or 0
             ret_cls = "text-emerald-600" if ret >= 0 else "text-red-600"
-            
-            # Win% - Show only for last 5 days of trades, otherwise blank
+
+        # Build dropdown option lists from actual data
+        horizons = sorted(set(t.get("horizon_label", "") for t in trades if t.get("horizon_label")))
+        statuses_raw = {"WON": "Won", "LOST": "Lost", "EXPIRED_WIN": "Exp Win", "EXPIRED_LOSS": "Exp Loss", "CANCELLED": "Cancelled"}
+        statuses_present = sorted(set(t.get("status", "") for t in trades if t.get("status")))
+        reasons_present = sorted(set(t.get("exit_reason", "") for t in trades if t.get("exit_reason")))
+
+        sel_cls = "w-full text-xs border border-gray-200 rounded-md px-1 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+
+        hz_opts = "<option value=''>All</option>" + "".join(f"<option value='{hz}'>{hz}</option>" for hz in horizons)
+        st_opts = "<option value=''>All</option>" + "".join(f"<option value='{s}'>{statuses_raw.get(s,s)}</option>" for s in statuses_present)
+        re_opts = "<option value=''>All</option>" + "".join(f"<option value='{r}'>{r}</option>" for r in reasons_present)
+
+        rows = ""
+        for t in trades:
+            ret = t.get("actual_return_pct", 0) or 0
+            ret_cls = "text-emerald-600" if ret >= 0 else "text-red-600"
+
+            # Win% — show whenever predicted_win_rate is available
             win_pct = t.get("predicted_win_rate")
-            entry_dt = t.get("entry_date", "")
-            if entry_dt >= cutoff_date and win_pct is not None:
+            if win_pct is not None:
                 win_pct_str = f"{win_pct:.0f}%"
                 win_pct_color = "text-emerald-600" if win_pct >= 50 else "text-amber-600"
             else:
                 win_pct_str = "—"
                 win_pct_color = "text-gray-400"
-            
+
             trade_id = t.get("id", 0)
+            row_horizon = _e(t.get("horizon_label", ""))
+            row_status = _e(t.get("status", ""))
+            row_ticker = _e(_ticker(t["ticker"]))
+            row_reason = _e(t.get("exit_reason", ""))
             rows += f'''
-            <tr class="hover:bg-blue-50/50 transition border-b border-gray-100" data-trade-id="{trade_id}">
+            <tr class="hover:bg-blue-50/50 transition border-b border-gray-100 history-row" data-trade-id="{trade_id}" data-horizon="{row_horizon}" data-status="{row_status}" data-ticker="{row_ticker}" data-reason="{row_reason}">
               <td class="px-3 py-3">
-                <input type="checkbox" class="trade-checkbox w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" value="{trade_id}" data-ticker="{_e(_ticker(t["ticker"]))}">
+                <input type="checkbox" class="trade-checkbox w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" value="{trade_id}" data-ticker="{row_ticker}">
               </td>
               <td class="px-4 py-3">{status_badge(t["status"])}</td>
-              <td class="px-4 py-3 font-semibold text-gray-800">{_e(_ticker(t["ticker"]))}</td>
-              <td class="px-4 py-3 text-gray-600">{_e(t.get("horizon_label",""))}</td>
+              <td class="px-4 py-3 font-semibold text-gray-800">{row_ticker}</td>
+              <td class="px-4 py-3 text-gray-600">{row_horizon}</td>
               <td class="px-4 py-3 text-center font-semibold {win_pct_color}">{win_pct_str}</td>
               <td class="px-4 py-3 text-right font-mono text-gray-600">{_price(t["entry_price"])}</td>
               <td class="px-4 py-3 text-right font-mono text-gray-600">{_price(t.get("exit_price"))}</td>
               <td class="px-4 py-3 text-right font-mono font-semibold {ret_cls}">{_pct(ret)}</td>
-              <td class="px-4 py-3 text-xs text-gray-500">{_e(t.get("exit_reason",""))}</td>
+              <td class="px-4 py-3 text-xs text-gray-500">{row_reason}</td>
               <td class="px-4 py-3 text-xs text-gray-500">{_date(t["entry_date"])}</td>
               <td class="px-4 py-3 text-xs text-gray-500">{_date(t.get("exit_date"))}</td>
               <td class="px-4 py-3 text-xs text-gray-500 max-w-[150px] truncate">{_e(t.get("patterns",""))}</td>
@@ -1413,7 +1525,7 @@ def render_history():
             <div class="flex items-center gap-3">
               <input type="checkbox" id="select-all-trades" class="w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer">
               <label for="select-all-trades" class="text-sm font-medium text-gray-700 cursor-pointer">Select All</label>
-              <span id="selection-count" class="text-sm text-gray-500">(0 / {len(trades)} selected, max 25)</span>
+              <span id="selection-count" class="text-sm text-gray-500">(0 / {len(trades)} selected)</span>
             </div>
             <button id="delete-selected-btn" onclick="deleteSelectedTrades()" disabled class="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
               Delete Selected
@@ -1421,33 +1533,73 @@ def render_history():
           </div>
           <div class="overflow-x-auto scrollbar-thin">
             <table class="w-full text-sm">
-              <thead><tr class="border-b border-gray-200">
-                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase w-8"></th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Stock</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Horizon</th>
-                <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Win%</th>
-                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Entry</th>
-                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Exit</th>
-                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Return</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reason</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Entry</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Exit</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Pattern</th>
-              </tr></thead>
+              <thead>
+                <tr class="border-b border-gray-200 bg-gray-50">
+                  <th class="px-3 py-3 w-8"></th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Stock</th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Horizon</th>
+                  <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Win%</th>
+                  <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Entry</th>
+                  <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Exit</th>
+                  <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Return</th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reason</th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Entry</th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Exit</th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Pattern</th>
+                </tr>
+                <tr class="border-b border-gray-100 bg-gray-50">
+                  <th class="px-3 py-2"></th>
+                  <th class="px-2 py-2"><select id="f-status" onchange="applyHistoryFilters()" class="{sel_cls}">{st_opts}</select></th>
+                  <th class="px-2 py-2"><input id="f-stock" oninput="applyHistoryFilters()" type="text" placeholder="Search…" class="{sel_cls}"></th>
+                  <th class="px-2 py-2"><select id="f-horizon" onchange="applyHistoryFilters()" class="{sel_cls}">{hz_opts}</select></th>
+                  <th></th><th></th><th></th><th></th>
+                  <th class="px-2 py-2"><select id="f-reason" onchange="applyHistoryFilters()" class="{sel_cls}">{re_opts}</select></th>
+                  <th></th><th></th><th></th>
+                </tr>
+              </thead>
               <tbody>{rows}</tbody>
             </table>
           </div>
         </div>
 
         <script>
+        function applyHistoryFilters() {{
+          var fStatus  = document.getElementById('f-status').value.toLowerCase();
+          var fStock   = document.getElementById('f-stock').value.toLowerCase().trim();
+          var fHorizon = document.getElementById('f-horizon').value.toLowerCase();
+          var fReason  = document.getElementById('f-reason').value.toLowerCase();
+          var total = 0, wins = 0, losses = 0;
+          document.querySelectorAll('.history-row').forEach(function(row) {{
+            var s  = (row.dataset.status  || '').toLowerCase();
+            var tk = (row.dataset.ticker  || '').toLowerCase();
+            var hz = (row.dataset.horizon || '').toLowerCase();
+            var re = (row.dataset.reason  || '').toLowerCase();
+            var show = (!fStatus  || s  === fStatus)
+                    && (!fStock   || tk.includes(fStock))
+                    && (!fHorizon || hz === fHorizon)
+                    && (!fReason  || re === fReason);
+            row.style.display = show ? '' : 'none';
+            if (show) {{
+              total++;
+              if (s === 'won' || s === 'expired_win') wins++;
+              else if (s === 'lost' || s === 'expired_loss') losses++;
+            }}
+          }});
+          document.getElementById('hist-total').textContent   = total;
+          document.getElementById('hist-wins').textContent    = wins;
+          document.getElementById('hist-losses').textContent  = losses;
+          var wr = total > 0 ? (wins / total * 100).toFixed(1) : '0.0';
+          document.getElementById('hist-wr').textContent = wr + '%';
+        }}
+
         function updateSelectionCount() {{
           const checkboxes = document.querySelectorAll('.trade-checkbox');
           const selected = Array.from(checkboxes).filter(cb => cb.checked);
           const count = selected.length;
-          document.getElementById('selection-count').textContent = `(${{count}} / {len(trades)} selected, max 25)`;
+          document.getElementById('selection-count').textContent = `(${{count}} / {len(trades)} selected)`;
           document.getElementById('delete-selected-btn').disabled = count === 0;
-          
+
           // Update "Select All" checkbox state
           const selectAllCheckbox = document.getElementById('select-all-trades');
           if (count === 0) {{
@@ -1463,26 +1615,14 @@ def render_history():
 
         document.querySelectorAll('.trade-checkbox').forEach(checkbox => {{
           checkbox.addEventListener('change', function(e) {{
-            const selected = Array.from(document.querySelectorAll('.trade-checkbox')).filter(cb => cb.checked).length;
-            if (selected > 25) {{
-              this.checked = false;
-              alert('Maximum 25 trades can be deleted at once');
-            }} else {{
-              updateSelectionCount();
-            }}
+            updateSelectionCount();
           }});
         }});
 
         document.getElementById('select-all-trades').addEventListener('change', function(e) {{
           const checkboxes = document.querySelectorAll('.trade-checkbox');
           if (this.checked) {{
-            let count = 0;
-            for (let cb of checkboxes) {{
-              if (count < 25) {{
-                cb.checked = true;
-                count++;
-              }}
-            }}
+            checkboxes.forEach(cb => cb.checked = true);
           }} else {{
             checkboxes.forEach(cb => cb.checked = false);
           }}
@@ -1529,7 +1669,13 @@ def render_history():
         <h2 class="text-2xl font-bold text-gray-800">Trade History</h2>
         <p class="text-sm text-gray-500 mt-1">{len(trades)} closed trades</p>
       </div>
-      <a href="/history" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm transition shadow-sm">Refresh</a>
+      <div class="flex items-center gap-2">
+        <a href="/history/export" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium transition shadow-sm">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+          Download Excel
+        </a>
+        <a href="/history" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm transition shadow-sm">Refresh</a>
+      </div>
     </div>
     {summary}
     {table}'''
@@ -3296,7 +3442,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "filters": ("filters", render_filters),
         }
 
-        if path == "feedback/download":
+        if path == "history/export":
+            xlsx = _history_xlsx_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_header("Content-Disposition", "attachment; filename=traqo_closed_trades.xlsx")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(xlsx)
+        elif path == "feedback/download":
             # CSV download of feedback log
             csv_bytes = _feedback_csv_bytes()
             self.send_response(200)
