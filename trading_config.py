@@ -86,7 +86,7 @@ ALLOWED_INSTRUMENTS = {
     "fineorg", "fluorochem", "fortis", "gillette", "glenmark",
     "glaxo", "gmrairport", "gnfc", "godrejind", "godrejprop",
     "granules", "graphite", "grindwell", "gujgasltd", "hatsun",
-    "hindpetro", "honaut", "idfcfirstb", "iex", "iifl",
+    "hindpetro", "hindzinc", "honaut", "hudco", "idfcfirstb", "iex", "iifl",
     "indianb", "indianhotels", "indiamart", "industower", "intellect",
     "ipcalab", "jkcement", "jswenergy", "jswinfra", "jublfood",
     "kalyankjil", "kei", "kims", "kpittech", "lalpathlab",
