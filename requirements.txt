@@ -38,6 +38,9 @@ ollama>=0.4
 streamlit>=1.40
 Flask>=3.1
 
+# --- Excel Export ---
+openpyxl>=3.1
+
 # --- Utilities ---
 tqdm>=4.66
 python-dateutil>=2.9

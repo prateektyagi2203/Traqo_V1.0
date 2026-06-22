@@ -27,7 +27,25 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from trading_config import INSTRUMENT_SECTORS
+from trading_config import (
+    INSTRUMENT_SECTORS,
+    BEARISH_SCORE_RED_ALERT,
+    BEARISH_SCORE_YELLOW_ALERT,
+    BEARISH_SCORE_ENTRY_DELTA_TRIM,
+    TRIM_BTST_PERCENTAGE,
+)
+
+# Global Sentiment — intraday bearish score monitoring
+try:
+    from global_sentiment import GlobalSentimentMonitor
+    from startup_checkpoint import StartupCheckpoint
+    _gsm = GlobalSentimentMonitor()
+    _checkpoint = StartupCheckpoint()
+    HAVE_GLOBAL_SENTIMENT = True
+except ImportError:
+    HAVE_GLOBAL_SENTIMENT = False
+    _gsm = None
+    _checkpoint = None
 
 # Trajectory Health (RAG-informed mid-trade intelligence)
 try:
@@ -619,6 +637,153 @@ def ensure_entry_regime_column(conn: sqlite3.Connection):
 
 
 # ============================================================
+# GLOBAL BEARISH SCORE — INTRADAY TRIM DECISIONS
+# ============================================================
+
+# Per-session set: position_ids already processed today (avoids duplicate logs)
+_trim_logged_today: set = set()
+
+
+def check_intraday_bearish_trim(
+    open_trades: List[dict],
+    entry_bearish_scores: Dict[int, float] = None,
+) -> List[dict]:
+    """
+    Check all BTST_1d open positions against the current live bearish score.
+
+    Rules:
+      - Only runs during NSE market hours (9:15 AM – 3:25 PM IST)
+      - Only processes horizon == 'BTST_1d'
+      - Swing_3d / Swing_5d / Swing_10d are intentionally SKIPPED
+      - Trim triggered if:
+          current_score >= BEARISH_SCORE_RED_ALERT   (70)  OR
+          current_score – entry_score >= BEARISH_SCORE_ENTRY_DELTA_TRIM (25)
+      - Decision price stored = HIGH of the current 1-minute candle (conservative)
+      - Decision is logged to bearish_trim_decisions; execution happens on startup
+
+    Returns list of triggered trim decision dicts.
+    """
+    if not HAVE_GLOBAL_SENTIMENT or _gsm is None or _checkpoint is None:
+        return []
+
+    # NSE market hours guard
+    now = datetime.now()
+    market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=25, second=0, microsecond=0)
+    if not (market_open <= now <= market_close):
+        return []
+
+    # Fetch current bearish score
+    try:
+        current_score, _ = _gsm.calculate_bearish_score()
+    except Exception as e:
+        log.warning(f"[INTRADAY TRIM] Bearish score fetch failed: {e}")
+        return []
+
+    if entry_bearish_scores is None:
+        entry_bearish_scores = {}
+
+    triggered = []
+
+    for trade in open_trades:
+        trade_id = trade.get("id")
+        horizon  = trade.get("horizon_label", "")
+        ticker   = trade.get("ticker", "UNKNOWN")
+
+        # Only BTST_1d — skip all swing horizons
+        if "BTST" not in horizon.upper():
+            continue
+
+        # Skip if already processed today
+        if trade_id in _trim_logged_today:
+            continue
+
+        entry_score  = entry_bearish_scores.get(trade_id, 30)
+        score_delta  = current_score - entry_score
+
+        # Determine trigger reason
+        triggered_reason = None
+        if current_score >= BEARISH_SCORE_RED_ALERT:
+            triggered_reason = (
+                f"RED alert: score={current_score} >= {BEARISH_SCORE_RED_ALERT}"
+            )
+        elif score_delta >= BEARISH_SCORE_ENTRY_DELTA_TRIM:
+            triggered_reason = (
+                f"Score delta +{score_delta:.0f} "
+                f"(entry={entry_score}, current={current_score}, "
+                f"threshold={BEARISH_SCORE_ENTRY_DELTA_TRIM})"
+            )
+
+        if triggered_reason is None:
+            continue
+
+        # Fetch HIGH of current minute candle (conservative decision price)
+        decision_price = _gsm.get_minute_high(ticker, now)
+
+        if decision_price is None:
+            # Fallback: last daily close
+            try:
+                df = _get_daily_data(f"{ticker}.NS", lookback_days=2)
+                if df is not None and len(df) > 0:
+                    decision_price = float(df["Close"].iloc[-1])
+            except Exception:
+                pass
+
+        if decision_price is None:
+            log.warning(f"[INTRADAY TRIM] No price for {ticker} — skipping")
+            continue
+
+        # Log trim decision to DB
+        try:
+            _checkpoint.ensure_trim_table()
+            decision_id = _checkpoint.log_trim_decision(
+                position_id=trade_id,
+                position_ticker=ticker,
+                decision_price=decision_price,
+                bearish_score=current_score,
+                entry_bearish_score=entry_score,
+                trim_reason=triggered_reason,
+                trim_percentage=30,
+            )
+
+            _trim_logged_today.add(trade_id)
+
+            log.warning(
+                f"[INTRADAY TRIM] TRIGGERED: {ticker} (BTST) — "
+                f"score={current_score}, delta={score_delta:.0f}, "
+                f"price={decision_price:.2f}, decision_id={decision_id}"
+            )
+
+            triggered.append({
+                "trade_id":      trade_id,
+                "ticker":        ticker,
+                "decision_id":   decision_id,
+                "decision_price":decision_price,
+                "current_score": current_score,
+                "entry_score":   entry_score,
+                "score_delta":   score_delta,
+                "reason":        triggered_reason,
+            })
+
+        except Exception as e:
+            log.error(f"[INTRADAY TRIM] Failed to log decision for {ticker}: {e}")
+
+    if triggered:
+        log.warning(
+            f"[INTRADAY TRIM] {len(triggered)} BTST trim decision(s) logged. "
+            f"Will execute retroactively on next startup."
+        )
+
+    return triggered
+
+
+def reset_intraday_trim_cache():
+    """Clear per-session duplicate-prevention cache. Call at start of each trading day."""
+    global _trim_logged_today
+    _trim_logged_today = set()
+
+
+# ============================================================
 # MAIN ENTRY POINT — for standalone or integrated use
 # ============================================================
 class PositionRiskMonitor:
@@ -665,6 +830,22 @@ class PositionRiskMonitor:
 
         # Assess
         health_results = assess_all_positions(open_trades, check_date)
+
+        # --- GLOBAL BEARISH: Intraday trim check (BTST only) ---
+        if HAVE_GLOBAL_SENTIMENT:
+            try:
+                entry_scores = {
+                    t["id"]: (t.get("entry_bearish_score") or 30)
+                    for t in open_trades
+                }
+                intraday_trims = check_intraday_bearish_trim(open_trades, entry_scores)
+                if intraday_trims:
+                    log.warning(
+                        f"[GLOBAL BEARISH] {len(intraday_trims)} BTST trim "
+                        f"decision(s) logged this cycle"
+                    )
+            except Exception as e:
+                log.warning(f"[GLOBAL BEARISH] Intraday check failed: {e}")
 
         # Log + persist
         summary = log_risk_report(health_results, check_date)

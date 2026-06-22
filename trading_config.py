@@ -512,6 +512,27 @@ REGIME_POSITION_SCALE = {          # Scale position size by regime
 
 
 # ============================================================
+# ITEM 9b: GLOBAL BEARISH SENTIMENT THRESHOLDS
+# ============================================================
+# Pre-market and intraday bearish sentiment monitoring.
+# Based on Jefferies institutional practice (June 2026 analysis).
+
+BEARISH_SCORE_RED_ALERT = 70           # Liquidate all BTST positions
+BEARISH_SCORE_YELLOW_ALERT = 40        # Trim 30%, tighten SL 25%
+BEARISH_SCORE_NSE_GAP_THRESHOLD = -0.75  # NSE gap-down threshold for trim gate
+BEARISH_SCORE_ENTRY_DELTA_TRIM = 25    # Trim if intraday score worsens by 25+ pts
+
+TRIM_BTST_PERCENTAGE = 30              # % of BTST position to trim on yellow/red
+TRIM_SWING_PERCENTAGE = 50             # % of Swing to trim if ever enabled
+TIGHTEN_SL_YELLOW_ALERT = 0.25         # Tighten SL by 25% on yellow alert
+TIGHTEN_SL_RED_ALERT = 0.35            # Tighten SL by 35% on red alert
+
+MONITOR_PRICE_INTERVAL_MINUTES = 1     # Intraday bearish check frequency
+STORE_DECISION_PRICE_AS = "HIGH"       # Use HIGH of minute candle for decisions
+EXECUTE_RETROACTIVE_TRIMS = True       # Execute pending trims on startup
+
+
+# ============================================================
 # ITEM 5: ML CLASSIFIER CONFIG
 # ============================================================
 ML_MODEL_PATH = "models/xgb_classifier.pkl"

@@ -104,6 +104,14 @@ try:
 except ImportError:
     HAVE_POSITION_RISK_MONITOR = False
 
+# Global Sentiment + Startup Checkpoint
+try:
+    from global_sentiment import GlobalSentimentMonitor, get_overnight_bearish_score
+    from startup_checkpoint import process_pending_trims_on_startup
+    HAVE_GLOBAL_SENTIMENT = True
+except ImportError:
+    HAVE_GLOBAL_SENTIMENT = False
+
 # Trajectory Health (RAG-informed mid-trade exit intelligence)
 HAVE_TRAJECTORY_HEALTH = False
 try:
@@ -941,6 +949,9 @@ class PaperTrader:
             except Exception as e:
                 log.warning(f"Trajectory Health init failed: {e}")
 
+        # Global bearish score (loaded on each run())
+        self.current_bearish_score = 30
+
         log.info("Paper Trader initialized")
 
     # ----------------------------------------------------------
@@ -955,6 +966,32 @@ class PaperTrader:
         log.info("=" * 60)
         log.info("PAPER TRADER RUN STARTED (Manual Approval Mode)")
         log.info("=" * 60)
+
+        # ---------------------------------------------------------------
+        # STEP 0: Process any retroactive trim decisions from overnight
+        # ---------------------------------------------------------------
+        if HAVE_GLOBAL_SENTIMENT:
+            try:
+                trim_results = process_pending_trims_on_startup()
+                if trim_results.get('executed', 0) or trim_results.get('skipped', 0):
+                    log.info(
+                        f"[STARTUP] Retroactive trims: "
+                        f"{trim_results['executed']} executed, "
+                        f"{trim_results['skipped']} skipped (position closed)"
+                    )
+            except Exception as e:
+                log.warning(f"[STARTUP] Pending trim processing failed: {e}")
+
+        # ---------------------------------------------------------------
+        # STEP 0b: Load overnight bearish score
+        # ---------------------------------------------------------------
+        try:
+            self.current_bearish_score = get_overnight_bearish_score() if HAVE_GLOBAL_SENTIMENT else 30
+            score = self.current_bearish_score
+            label = "RED ALERT" if score >= 70 else "YELLOW" if score >= 40 else "SAFE"
+            log.info(f"[STARTUP] Overnight bearish score: {score}/100 [{label}]")
+        except Exception:
+            self.current_bearish_score = 30
 
         today = date.today()
         summary = {

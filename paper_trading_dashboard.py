@@ -1056,7 +1056,41 @@ def render_signals():
               </div>
             </div>'''
 
-    body = f'''
+    # ---- Global Bearish Score widget ----
+    try:
+        from global_sentiment import get_overnight_bearish_score
+        bs = get_overnight_bearish_score()
+        if bs >= 70:
+            bs_bg = "bg-red-50 border-red-200"; bs_icon = "\u26a0\ufe0f"
+            bs_label = "RED ALERT — BTST trims active"; bs_tc = "text-red-700"
+        elif bs >= 40:
+            bs_bg = "bg-amber-50 border-amber-200"; bs_icon = "\u26a1"
+            bs_label = "CAUTION — Elevated bearish risk"; bs_tc = "text-amber-700"
+        else:
+            bs_bg = "bg-green-50 border-green-200"; bs_icon = "\u2705"
+            bs_label = "SAFE — Global markets neutral"; bs_tc = "text-green-700"
+    except Exception:
+        bs = 30; bs_bg = "bg-gray-50 border-gray-200"
+        bs_icon = "\u2014"; bs_label = "Score unavailable"; bs_tc = "text-gray-500"
+
+    bearish_widget = f'''<div class="mb-5 p-4 rounded-xl border {bs_bg} flex items-center justify-between shadow-sm">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">{bs_icon}</span>
+        <div>
+          <p class="text-xs font-medium text-gray-500 uppercase tracking-wide">Global Bearish Score</p>
+          <p class="text-xl font-bold {bs_tc}">{bs} / 100 &nbsp;&mdash;&nbsp; {bs_label}</p>
+          <p class="text-xs text-gray-400 mt-0.5">S&amp;P Futures &middot; VIX &middot; DXY &middot; Oil &middot; Nikkei &middot; Hang Seng &middot; ASX</p>
+        </div>
+      </div>
+      <div class="text-right text-xs text-gray-400 space-y-1">
+        <p>BTST auto-trim: score &gt; 70</p>
+        <p>Intraday trim: delta &gt; 25 pts</p>
+        <a href="/api/bearish-score" target="_blank" class="text-blue-500 hover:underline">Live JSON →</a>
+        <a href="/api/pending-trims" target="_blank" class="text-blue-500 hover:underline block">Pending trims →</a>
+      </div>
+    </div>'''
+
+    body = f'''{bearish_widget}
     <div class="flex items-center justify-between mb-4">
       <div>
         <h2 class="text-2xl font-bold text-gray-800">Today's Signals</h2>
@@ -3442,14 +3476,74 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "filters": ("filters", render_filters),
         }
 
-        if path == "history/export":
-            xlsx = _history_xlsx_bytes()
+        if path == "api/bearish-score":
+            # Live overnight bearish score JSON endpoint
+            try:
+                from global_sentiment import get_overnight_bearish_score
+                score = get_overnight_bearish_score()
+                status = "red" if score >= 70 else "yellow" if score >= 40 else "green"
+                label  = "RED ALERT" if score >= 70 else "CAUTION" if score >= 40 else "SAFE"
+                payload = json.dumps({
+                    "score": score,
+                    "status": status,
+                    "label": label,
+                    "btst_trim_active": score >= 70,
+                    "intraday_trim_threshold": 25,
+                    "timestamp": datetime.now().isoformat(),
+                })
+            except Exception as e:
+                payload = json.dumps({"score": 30, "error": str(e)})
             self.send_response(200)
-            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            self.send_header("Content-Disposition", "attachment; filename=traqo_closed_trades.xlsx")
+            self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            self.wfile.write(xlsx)
+            self.wfile.write(payload.encode("utf-8"))
+            return
+
+        if path == "api/pending-trims":
+            # Pending trim decisions JSON endpoint
+            try:
+                from startup_checkpoint import StartupCheckpoint
+                cp = StartupCheckpoint()
+                cp.ensure_trim_table()
+                pending = cp.get_pending_trims()
+                payload = json.dumps({
+                    "count": len(pending),
+                    "pending_trims": pending,
+                    "timestamp": datetime.now().isoformat(),
+                }, default=str)
+            except Exception as e:
+                payload = json.dumps({"count": 0, "error": str(e)})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(payload.encode("utf-8"))
+            return
+
+        if path == "history/export":
+            try:
+                xlsx = _history_xlsx_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                self.send_header("Content-Disposition", "attachment; filename=traqo_closed_trades.xlsx")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(xlsx)
+            except ImportError as e:
+                error_msg = f"Excel export requires 'openpyxl'. Install with: pip install openpyxl"
+                logger.error(f"Excel export failed: {error_msg}")
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(error_msg.encode("utf-8"))
+            except Exception as e:
+                error_msg = f"Error generating Excel export: {str(e)}"
+                logger.error(error_msg)
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(error_msg.encode("utf-8"))
         elif path == "feedback/download":
             # CSV download of feedback log
             csv_bytes = _feedback_csv_bytes()
