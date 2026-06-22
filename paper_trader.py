@@ -74,8 +74,10 @@ from trading_config import (
     WHITELISTED_PATTERNS, EXCLUDED_PATTERNS,
     STRUCTURAL_SL_PATTERNS, STRUCTURAL_SL_MULTIPLIER, STANDARD_SL_MULTIPLIER,
     SL_FLOOR_PCT, SL_CAP_PCT,
+    ALLOWED_INSTRUMENTS,
     INSTRUMENT_SECTORS,
     ALLOWED_DIRECTIONS,
+    is_tradeable_instrument,
     is_tradeable_pattern,
     PATTERN_BULL_REGIME_ONLY,
 )
@@ -167,75 +169,104 @@ HORIZON_CONFIG = {
 # Swing_10d disabled: 8.3% WR in Mar-Apr 2026 (vs 59.7% for BTST_1d) — broken calibration
 SHADOW_ONLY_HORIZONS = {"Swing_10d"}
 
-# All stocks to scan
-SCAN_TICKERS = list(dict.fromkeys([
-    # --- Nifty 50 ---
-    "RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "TCS.NS",
-    "BHARTIARTL.NS", "SBIN.NS", "LT.NS", "BAJFINANCE.NS", "AXISBANK.NS",
-    "KOTAKBANK.NS", "ITC.NS", "HINDUNILVR.NS", "MARUTI.NS", "TATAMOTORS.NS",
-    "HCLTECH.NS", "SUNPHARMA.NS", "TITAN.NS", "ADANIENT.NS", "WIPRO.NS",
-    "TATASTEEL.NS", "M&M.NS", "NTPC.NS", "POWERGRID.NS", "ULTRACEMCO.NS",
-    "ASIANPAINT.NS", "BAJAJFINSV.NS", "COALINDIA.NS", "NESTLEIND.NS", "JSWSTEEL.NS",
-    "GRASIM.NS", "ONGC.NS", "DIVISLAB.NS", "DRREDDY.NS", "CIPLA.NS",
-    "APOLLOHOSP.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "BPCL.NS", "TECHM.NS",
-    "TATACONSUM.NS", "BRITANNIA.NS", "HINDALCO.NS", "INDUSINDBK.NS", "SBILIFE.NS",
-    "HDFCLIFE.NS", "BAJAJ-AUTO.NS", "ADANIPORTS.NS", "SHRIRAMFIN.NS",
-    "ETERNAL.NS", "TRENT.NS",
-    # --- Nifty Next 50 ---
-    "ABB.NS", "ACC.NS", "ADANIGREEN.NS", "ADANIPOWER.NS", "AMBUJACEM.NS",
-    "ATGL.NS", "AUROPHARMA.NS", "BAJAJHLDNG.NS", "BANKBARODA.NS", "BEL.NS",
-    "BERGEPAINT.NS", "BIOCON.NS", "BOSCHLTD.NS", "CANBK.NS", "CHOLAFIN.NS",
-    "COLPAL.NS", "DABUR.NS", "DLF.NS", "GAIL.NS", "GODREJCP.NS",
-    "HAL.NS", "HAVELLS.NS", "ICICIPRULI.NS", "INDIGO.NS", "IOC.NS",
-    "IRCTC.NS", "IRFC.NS", "JINDALSTEL.NS", "JIOFIN.NS", "LICI.NS",
-    "LTIM.NS", "LTTS.NS", "LUPIN.NS", "MAXHEALTH.NS", "MOTHERSON.NS",
-    "NAUKRI.NS", "NHPC.NS", "OBEROIRLTY.NS", "OFSS.NS", "PAYTM.NS",
-    "PFC.NS", "PIDILITIND.NS", "PNB.NS", "POLYCAB.NS", "RECLTD.NS",
-    "SBICARD.NS", "SIEMENS.NS", "SRF.NS", "TATAPOWER.NS",
-    # --- Nifty Midcap 150 ---
-    "AARTIIND.NS", "ABCAPITAL.NS", "ABFRL.NS", "ALKEM.NS", "ANGELONE.NS",
-    "APLAPOLLO.NS", "APLLTD.NS", "ASHOKLEY.NS", "ASTRAL.NS", "ATUL.NS",
-    "AUBANK.NS", "BALKRISIND.NS", "BANKINDIA.NS", "BATAINDIA.NS", "BHARATFORG.NS",
-    "BHEL.NS", "BSE.NS", "CANFINHOME.NS", "CARBORUNIV.NS", "CASTROLIND.NS",
-    "CDSL.NS", "CESC.NS", "CGPOWER.NS", "CHAMBLFERT.NS", "CLEAN.NS",
-    "COCHINSHIP.NS", "COFORGE.NS", "COROMANDEL.NS", "CROMPTON.NS", "CUB.NS",
-    "CUMMINSIND.NS", "CYIENT.NS", "DALBHARAT.NS", "DEEPAKNTR.NS", "DELHIVERY.NS",
-    "DEVYANI.NS", "DIXON.NS", "EMAMILTD.NS", "ENDURANCE.NS", "ESCORTS.NS",
-    "EXIDEIND.NS", "FACT.NS", "FEDERALBNK.NS", "FINEORG.NS", "FLUOROCHEM.NS",
-    "FORTIS.NS", "GILLETTE.NS", "GLENMARK.NS", "GLAXO.NS", "GMRAIRPORT.NS",
-    "GNFC.NS", "GODREJIND.NS", "GODREJPROP.NS", "GRANULES.NS", "GRAPHITE.NS",
-    "GRINDWELL.NS", "GUJGASLTD.NS", "HATSUN.NS", "HINDPETRO.NS", "HONAUT.NS",
-    "IDFCFIRSTB.NS", "IEX.NS", "IIFL.NS", "INDIANB.NS", "INDHOTEL.NS",
-    "INDIAMART.NS", "INDUSTOWER.NS", "INTELLECT.NS", "IPCALAB.NS", "JKCEMENT.NS", "JSWENERGY.NS",
-    "JUBLFOOD.NS", "KALYANKJIL.NS", "KEI.NS", "KIMS.NS", "KPITTECH.NS",
-    "LALPATHLAB.NS", "LAURUSLABS.NS", "LICHSGFIN.NS", "MANAPPURAM.NS", "MANKIND.NS",
-    "MARICO.NS", "MAZDOCK.NS", "METROBRAND.NS", "MFSL.NS", "MGL.NS",
-    "MPHASIS.NS", "MRF.NS", "MUTHOOTFIN.NS", "NATCOPHARM.NS", "NAVINFLUOR.NS",
-    "NMDC.NS", "OIL.NS", "PAGEIND.NS", "PATANJALI.NS", "PERSISTENT.NS",
-    "PETRONET.NS", "PHOENIXLTD.NS", "PIIND.NS", "POLYMED.NS", "PRESTIGE.NS",
-    "PVRINOX.NS", "RADICO.NS", "RAIN.NS", "RAJESHEXPO.NS", "RAMCOCEM.NS",
-    "RATNAMANI.NS", "RBLBANK.NS", "SAIL.NS", "SCHAEFFLER.NS", "SHREECEM.NS",
-    "SONACOMS.NS", "STARHEALTH.NS", "SUMICHEM.NS", "SUNDARMFIN.NS", "SUNDRMFAST.NS",
-    "SUNTV.NS", "SUPREMEIND.NS", "SYNGENE.NS", "TATACHEM.NS", "TATACOMM.NS",
-    "TATAELXSI.NS", "TATATECH.NS", "TIINDIA.NS", "TIMKEN.NS", "TORNTPHARM.NS",
-    "TORNTPOWER.NS", "TRIDENT.NS", "TVSMOTOR.NS", "UBL.NS", "UNIONBANK.NS",
-    "UNITDSPR.NS", "UPL.NS", "VBL.NS", "VEDL.NS", "VOLTAS.NS",
-    "WHIRLPOOL.NS", "YESBANK.NS", "ZEEL.NS", "ZYDUSLIFE.NS", "PGHH.NS",
-    "3MINDIA.NS", "AIAENG.NS", "AJANTPHARM.NS", "NAM-INDIA.NS", "JSWINFRA.NS",
-    "POONAWALLA.NS", "SUNTECK.NS",
-]))
+# Indian indices enabled for scan + paper entry in this phase.
+_INDIAN_INDEX_TO_YAHOO = {
+    "nifty50": "^NSEI",
+    "banknifty": "^NSEBANK",
+    "niftyit": "^CNXIT",
+    "niftypharma": "^CNXPHARMA",
+    "niftyauto": "^CNXAUTO",
+    "niftymetal": "^CNXMETAL",
+    "niftyfmcg": "^CNXFMCG",
+    "niftyenergy": "^CNXENERGY",
+    "niftyinfra": "^CNXINFRA",
+    "niftymedia": "^CNXMEDIA",
+    "niftypsubank": "^CNXPSUBANK",
+    "niftyrealty": "^CNXREALTY",
+}
 
-# Only non-trivial aliases (where Yahoo base name != internal name)
+_GLOBAL_INDEX_INSTRUMENTS = {
+    "dowjones", "nasdaq", "nikkei225", "hangseng", "ftse100", "eurostoxx50",
+}
+
+_COMMODITY_INSTRUMENTS = {"gold", "silver", "crude_oil"}
+
+# Only non-trivial aliases (where Yahoo base symbol != internal name)
 _YAHOO_ALIAS = {
-    "infy": "infosys", "m&m": "mahindra", "bajaj-auto": "bajajauto",
-    "one97": "paytm", "paytm": "paytm", "indhotel": "indianhotels",
-    "nam-india": "namindia", "eternal": "eternal",
+    "infy": "infosys",
+    "m&m": "mahindra",
+    "bajaj-auto": "bajajauto",
+    "one97": "paytm",
+    "paytm": "paytm",
+    "indhotel": "indianhotels",
+    "nam-india": "namindia",
+    "eternal": "eternal",
+    "nsei": "nifty50",
+    "nsebank": "banknifty",
+    "cnxit": "niftyit",
+    "cnxpharma": "niftypharma",
+    "cnxauto": "niftyauto",
+    "cnxmetal": "niftymetal",
+    "cnxfmcg": "niftyfmcg",
+    "cnxenergy": "niftyenergy",
+    "cnxinfra": "niftyinfra",
+    "cnxmedia": "niftymedia",
+    "cnxpsubank": "niftypsubank",
+    "cnxrealty": "niftyrealty",
+}
+
+_INTERNAL_TO_YAHOO_ALIAS = {
+    "mahindra": "M&M.NS",
+    "bajajauto": "BAJAJ-AUTO.NS",
+    "namindia": "NAM-INDIA.NS",
 }
 
 
+def _internal_to_yahoo(instrument: str) -> Optional[str]:
+    instrument = (instrument or "").lower().strip()
+    if not instrument:
+        return None
+
+    if instrument in _INDIAN_INDEX_TO_YAHOO:
+        return _INDIAN_INDEX_TO_YAHOO[instrument]
+
+    if instrument in _INTERNAL_TO_YAHOO_ALIAS:
+        return _INTERNAL_TO_YAHOO_ALIAS[instrument]
+
+    return f"{instrument.upper()}.NS"
+
+
 def _yahoo_to_internal(ticker: str) -> str:
-    base = ticker.replace(".NS", "").replace(".BO", "").lower()
+    base = ticker.replace(".NS", "").replace(".BO", "").replace("^", "").lower()
     return _YAHOO_ALIAS.get(base, base)
+
+
+def _build_scan_tickers() -> List[str]:
+    tickers: List[str] = []
+    skipped: List[str] = []
+
+    for instrument in sorted(ALLOWED_INSTRUMENTS):
+        if not is_tradeable_instrument(instrument):
+            continue
+
+        # Phase-1 rollout: enable all configured Indian indices + equities.
+        # Keep global indices and commodities out of entry scan for now.
+        if instrument in _GLOBAL_INDEX_INSTRUMENTS or instrument in _COMMODITY_INSTRUMENTS:
+            continue
+
+        yahoo_ticker = _internal_to_yahoo(instrument)
+        if yahoo_ticker:
+            tickers.append(yahoo_ticker)
+        else:
+            skipped.append(instrument)
+
+    if skipped:
+        log.warning(f"Skipped {len(skipped)} unmapped instruments: {sorted(skipped)}")
+
+    return list(dict.fromkeys(tickers))
+
+
+SCAN_TICKERS = _build_scan_tickers()
 
 
 # ============================================================
@@ -1275,7 +1306,7 @@ class PaperTrader:
         log.info(f"Market regime: {market_regime['trend']} "
                 f"(daily return: {market_regime['daily_return']:.2f}%)")
 
-        log.info(f"SCANNING {len(SCAN_TICKERS)} stocks for {date_str}...")
+        log.info(f"SCANNING {len(SCAN_TICKERS)} instruments for {date_str}...")
         t0 = _time.time()
         signals_found = 0
         trades_entered = 0
@@ -1603,7 +1634,7 @@ class PaperTrader:
         so the user can review and approve/discard from the dashboard."""
         date_str = scan_date.isoformat()
 
-        log.info(f"SCAN PREVIEW: {len(SCAN_TICKERS)} stocks for {date_str}...")
+        log.info(f"SCAN PREVIEW: {len(SCAN_TICKERS)} instruments for {date_str}...")
         t0 = _time.time()
         all_signals = []       # signals that passed filters (would be entered)
         skipped_signals = []   # signals that were filtered out
