@@ -2710,6 +2710,40 @@ def render_engine(action_result=None):
     status = get_engine_status()
     pending = get_pending_signals()
 
+    # Global Bearish Score widget (for decision-making context during scan/approval)
+    try:
+        from global_sentiment import get_overnight_bearish_score
+        bs = get_overnight_bearish_score()
+        if bs >= 70:
+            bs_bg = "bg-red-50 border-red-200"; bs_icon = "\u26a0\ufe0f"
+            bs_label = "RED ALERT — BTST trims active"; bs_tc = "text-red-700"
+        elif bs >= 40:
+            bs_bg = "bg-amber-50 border-amber-200"; bs_icon = "\u26a1"
+            bs_label = "CAUTION — Elevated bearish risk"; bs_tc = "text-amber-700"
+        else:
+            bs_bg = "bg-green-50 border-green-200"; bs_icon = "\u2705"
+            bs_label = "SAFE — Global markets neutral"; bs_tc = "text-green-700"
+    except Exception:
+        bs = 30; bs_bg = "bg-gray-50 border-gray-200"
+        bs_icon = "\u2014"; bs_label = "Score unavailable"; bs_tc = "text-gray-500"
+
+    bearish_widget = f'''<div class="mb-5 p-4 rounded-xl border {bs_bg} flex items-center justify-between shadow-sm">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">{bs_icon}</span>
+        <div>
+          <p class="text-xs font-medium text-gray-500 uppercase tracking-wide">Global Bearish Score (Decision Context)</p>
+          <p class="text-xl font-bold {bs_tc}">{bs} / 100 &nbsp;&mdash;&nbsp; {bs_label}</p>
+          <p class="text-xs text-gray-400 mt-0.5">S&amp;P Futures &middot; VIX &middot; DXY &middot; Oil &middot; Nikkei &middot; Hang Seng &middot; ASX</p>
+        </div>
+      </div>
+      <div class="text-right text-xs text-gray-400 space-y-1">
+        <p>BTST auto-trim: score &gt; 70</p>
+        <p>Intraday trim: delta &gt; 25 pts</p>
+        <p>Early-exit: trajectory &le; 40</p>
+        <p>SHORT_1d gate: score &ge; 70</p>
+      </div>
+    </div>'''
+
     # Action buttons - disabled while engine is running
     disabled = 'opacity-50 pointer-events-none' if status['running'] else ''
     buttons = f'''
@@ -3276,6 +3310,7 @@ def render_engine(action_result=None):
     body = f'''
     <h2 class="text-2xl font-bold text-gray-800 mb-2">Engine Control</h2>
     <p class="text-sm text-gray-500 mb-6">Run the paper trading engine manually or view logs</p>
+    {bearish_widget}
     {buttons}
     {live_html}
     {review_html}
