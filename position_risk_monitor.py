@@ -33,6 +33,9 @@ from trading_config import (
     BEARISH_SCORE_YELLOW_ALERT,
     BEARISH_SCORE_ENTRY_DELTA_TRIM,
     TRIM_BTST_PERCENTAGE,
+    SHORT_1D_ENABLED,
+    SHORT_1D_FORCE_CLOSE_TIME,
+    EXECUTE_RETROACTIVE_SHORT_CLOSE,
 )
 
 # Global Sentiment — intraday bearish score monitoring
@@ -650,6 +653,76 @@ def ensure_entry_regime_column(conn: sqlite3.Connection):
 # Per-session set: position_ids already processed today (avoids duplicate logs)
 _trim_logged_today: set = set()
 
+# Per-session set: SHORT positions already flagged for force-close today
+_short_close_logged_today: set = set()
+
+
+def check_short_force_close(open_trades: List[dict]) -> List[dict]:
+    """
+    Check if any SHORT_1d positions need force-closing at 15:15 IST.
+
+    Called every poll cycle from run_check(). Stores a PENDING decision in
+    bearish_trim_decisions (trim_reason='Short-force-close') for retroactive
+    execution on next startup — handles laptop-closed-at-3PM scenario.
+
+    Returns: list of position dicts that were logged for force-close.
+    """
+    if not SHORT_1D_ENABLED:
+        return []
+    if not HAVE_GLOBAL_SENTIMENT or _checkpoint is None:
+        return []
+
+    now = datetime.now()
+    now_str = now.strftime("%H:%M")
+
+    # Only trigger between 15:15 and 15:28 IST (give small window)
+    if now_str < SHORT_1D_FORCE_CLOSE_TIME or now_str > "15:28":
+        return []
+
+    short_trades = [
+        t for t in open_trades
+        if t.get("direction") == "BEARISH" and t.get("horizon_label") == "SHORT_1d"
+    ]
+    if not short_trades:
+        return []
+
+    triggered = []
+    for trade in short_trades:
+        tid = trade.get("id")
+        if tid in _short_close_logged_today:
+            continue
+
+        ticker = trade.get("ticker", "UNKNOWN")
+        try:
+            # Fetch current price for retroactive execution record
+            data = _get_daily_data(ticker, lookback_days=2)
+            if data is not None and len(data) >= 1:
+                current_price = float(data["Close"].iloc[-1])
+            else:
+                current_price = float(trade.get("entry_price", 0))
+
+            if EXECUTE_RETROACTIVE_SHORT_CLOSE:
+                _checkpoint.log_trim_decision(
+                    position_id=tid,
+                    position_ticker=ticker,
+                    decision_timestamp=now.isoformat(),
+                    decision_price=current_price,
+                    decision_bearish_score=100,   # forced close = max urgency
+                    entry_bearish_score=0,
+                    trim_percentage=100,
+                    trim_reason=f"Short-force-close|{SHORT_1D_FORCE_CLOSE_TIME}|intraday-short-must-close",
+                )
+                _short_close_logged_today.add(tid)
+                log.warning(
+                    f"[SHORT_1d FORCE-CLOSE] {ticker} @ ₹{current_price:.2f} "
+                    f"logged for retroactive execution at startup"
+                )
+                triggered.append(trade)
+        except Exception as e:
+            log.warning(f"[SHORT_1d FORCE-CLOSE] Failed to log {ticker}: {e}")
+
+    return triggered
+
 
 def check_intraday_bearish_trim(
     open_trades: List[dict],
@@ -853,6 +926,18 @@ class PositionRiskMonitor:
                     )
             except Exception as e:
                 log.warning(f"[GLOBAL BEARISH] Intraday check failed: {e}")
+
+        # --- SHORT_1d: Force-close at 15:15 IST (no overnight shorts allowed) ---
+        if SHORT_1D_ENABLED:
+            try:
+                short_closes = check_short_force_close(open_trades)
+                if short_closes:
+                    log.warning(
+                        f"[SHORT_1d] {len(short_closes)} SHORT position(s) logged "
+                        f"for force-close at {SHORT_1D_FORCE_CLOSE_TIME} IST"
+                    )
+            except Exception as e:
+                log.warning(f"[SHORT_1d] Force-close check failed: {e}")
 
         # Log + persist
         summary = log_risk_report(health_results, check_date)

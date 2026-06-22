@@ -1086,9 +1086,12 @@ def render_signals():
         <p>BTST auto-trim: score &gt; 70</p>
         <p>Intraday trim: delta &gt; 25 pts</p>
         <p>Early-exit: trajectory &le; 40</p>
+        <p>SHORT_1d gate: score &ge; 70</p>
         <a href="/api/bearish-score" target="_blank" class="text-blue-500 hover:underline">Live JSON →</a>
         <a href="/api/pending-trims" target="_blank" class="text-blue-500 hover:underline block">Pending trims →</a>
         <a href="/api/early-exits" target="_blank" class="text-blue-500 hover:underline block">Dead trades →</a>
+        <a href="/api/short-trades" target="_blank" class="text-blue-500 hover:underline block">Short trades →</a>
+        <a href="/api/short-force-closes" target="_blank" class="text-blue-500 hover:underline block">Short close queue →</a>
       </div>
     </div>'''
 
@@ -3545,6 +3548,80 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload = json.dumps({
                     "count": len(early_exits),
                     "pending_early_exits": early_exits,
+                    "timestamp": datetime.now().isoformat(),
+                }, default=str)
+            except Exception as e:
+                payload = json.dumps({"count": 0, "error": str(e)})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(payload.encode("utf-8"))
+            return
+
+        if path == "api/short-trades":
+            # Active SHORT_1d positions JSON endpoint
+            try:
+                import sqlite3
+                db_path = "paper_trades/paper_trades.db"
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT id, ticker, entry_price, target_price, sl_price,
+                           target_pct, sl_pct, rr_ratio, patterns, entry_date,
+                           status, actual_return_pct, exit_price, exit_reason
+                    FROM trades
+                    WHERE direction = 'BEARISH' AND horizon_label = 'SHORT_1d'
+                    ORDER BY entry_date DESC LIMIT 50
+                """)
+                short_trades = [dict(row) for row in cur.fetchall()]
+                # Stats
+                open_shorts = [t for t in short_trades if t['status'] == 'OPEN']
+                closed = [t for t in short_trades if t['status'] not in ('OPEN',)]
+                wins = [t for t in closed if (t.get('actual_return_pct') or 0) > 0]
+                losses = [t for t in closed if (t.get('actual_return_pct') or 0) <= 0]
+                conn.close()
+                payload = json.dumps({
+                    "active_count": len(open_shorts),
+                    "total_closed": len(closed),
+                    "wins": len(wins),
+                    "losses": len(losses),
+                    "win_rate": round(100 * len(wins) / len(closed), 1) if closed else 0,
+                    "active_shorts": open_shorts,
+                    "recent_closed": closed[:10],
+                    "timestamp": datetime.now().isoformat(),
+                }, default=str)
+            except Exception as e:
+                payload = json.dumps({"active_count": 0, "error": str(e)})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(payload.encode("utf-8"))
+            return
+
+        if path == "api/short-force-closes":
+            # Pending SHORT_1d force-close decisions (retroactive execution queue)
+            try:
+                from startup_checkpoint import StartupCheckpoint
+                import sqlite3
+                cp = StartupCheckpoint()
+                cp.ensure_trim_table()
+                conn = sqlite3.connect(cp.DB_PATH)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT * FROM bearish_trim_decisions
+                    WHERE execution_status = 'PENDING'
+                      AND trim_reason LIKE '%Short-force-close%'
+                    ORDER BY decision_timestamp DESC
+                """)
+                pending = [dict(row) for row in cur.fetchall()]
+                conn.close()
+                payload = json.dumps({
+                    "count": len(pending),
+                    "pending_force_closes": pending,
                     "timestamp": datetime.now().isoformat(),
                 }, default=str)
             except Exception as e:

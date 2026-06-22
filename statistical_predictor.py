@@ -850,6 +850,57 @@ class StatisticalPredictor:
 
         return result
 
+    def predict_bearish(self, pattern, timeframe=None, trend_short=None,
+                        rsi_zone=None, price_vs_vwap=None, market_regime=None,
+                        instrument=None, horizon=1):
+        """
+        Generate a BEARISH (SHORT) prediction for the given pattern + context.
+
+        Wraps predict() and then:
+        1. Filters to only return result if predicted_direction == 'bearish'
+        2. Inverts R:R metrics for short perspective (SL above, TP below)
+        3. Applies SHORT_1d confidence threshold (60%)
+        4. Returns None if bearish edge is insufficient
+
+        Used by paper_trader.py SHORT_1d scan loop.
+        """
+        from trading_config import SHORT_1D_ELIGIBLE_PATTERNS, SHORT_1D_CONFIDENCE_MIN
+
+        # Only process patterns eligible for shorting
+        if pattern not in SHORT_1D_ELIGIBLE_PATTERNS:
+            return None
+
+        result = self.predict(
+            pattern=pattern,
+            timeframe=timeframe,
+            trend_short=trend_short,
+            rsi_zone=rsi_zone,
+            price_vs_vwap=price_vs_vwap,
+            market_regime=market_regime,
+            instrument=instrument,
+            horizon=horizon,
+        )
+        if result is None:
+            return None
+
+        # Must have a bearish directional edge
+        if result.get("predicted_direction") != "bearish":
+            return None
+
+        # Confidence must meet SHORT_1d threshold (60%)
+        if result.get("confidence_score", 0) < SHORT_1D_CONFIDENCE_MIN:
+            return None
+
+        # Tag as SHORT direction for downstream processing
+        result["direction"] = "BEARISH"
+        result["horizon_label"] = "SHORT_1d"
+
+        # Invert win_rate perspective (bearish % becomes the win metric)
+        result["short_win_rate"] = result.get("bearish_pct", 50)
+        result["short_edge"] = result.get("bearish_edge", 0)
+
+        return result
+
     def predict_multi_pattern(self, patterns_str, **kwargs):
         """Predict for comma-separated patterns with ENSEMBLE voting.
         Returns an ensemble prediction if 2+ patterns qualify, otherwise returns best single pattern.

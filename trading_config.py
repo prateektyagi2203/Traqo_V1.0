@@ -546,6 +546,41 @@ EXECUTE_RETROACTIVE_EXITS = True       # Execute pending exits on startup
 
 
 # ============================================================
+# ITEM 9d: SHORT_1d — 1-DAY INTRADAY SHORT SELLING
+# ============================================================
+# India allows intraday short selling in cash equity (sell today, buy back same day).
+# SHORT_1d runs PARALLEL to BTST_1d but in bearish direction.
+#
+# Two deployment gates (both must pass):
+#   Gate 1 — Profit-exit raised to +1.5% so winners aren't capped too early
+#   Gate 2 — RED_ALERT gate: only enter SHORT if global bearish score >= 70
+#
+# Retroactive execution: force-close at 15:15 IST stored to bearish_trim_decisions
+# table with reason "Short-force-close". Executed on next startup like trims.
+
+SHORT_1D_ENABLED              = True    # Master switch for SHORT_1d horizon
+SHORT_1D_SL_MULTIPLIER        = 1.1     # ATR multiplier for SL (above entry)
+SHORT_1D_RR_RATIO             = 2.0     # 2:1 R:R — TP = SL_dist * 2.0 below entry
+SHORT_1D_CONFIDENCE_MIN       = 0.60    # 60% confidence threshold (higher than BTST longs)
+SHORT_1D_PROFIT_EXIT_PCT      = 1.5     # Lock in at +1.5% (backtest showed +0.5% caps wins)
+SHORT_1D_FORCE_CLOSE_TIME     = "15:15" # Force-close all shorts at 3:15 PM IST
+SHORT_1D_RED_ALERT_GATE       = True    # GATE 2: Only SHORT when global sentiment >= RED_ALERT
+SHORT_1D_MIN_BEARISH_SCORE    = BEARISH_SCORE_RED_ALERT  # Default: 70 (RED_ALERT)
+SHORT_1D_SHADOW_TRACKING      = True    # Track filtered shorts as shadow trades
+SHORT_1D_MAX_POSITIONS        = 3       # Max concurrent SHORT_1d positions
+EXECUTE_RETROACTIVE_SHORT_CLOSE = True  # Execute pending short force-closes on startup
+
+# Bearish patterns eligible for SHORT_1d (subset from pattern_detector._BEARISH_REVERSAL)
+# Only high-reliability patterns; add more as feedback data accumulates
+SHORT_1D_ELIGIBLE_PATTERNS = {
+    "bearish_engulfing", "three_black_crows", "evening_star", "evening_doji_star",
+    "dark_cloud_cover", "shooting_star", "bearish_harami", "tweezer_top",
+    "bearish_kicker", "gravestone_doji", "advance_block", "bearish_counterattack",
+    "three_inside_down", "three_outside_down",
+}
+
+
+# ============================================================
 # ITEM 5: ML CLASSIFIER CONFIG
 # ============================================================
 ML_MODEL_PATH = "models/xgb_classifier.pkl"

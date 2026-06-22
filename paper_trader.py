@@ -1138,6 +1138,129 @@ class PaperTrader:
         return conf_inv.get(new_val, "MEDIUM")
 
     # ----------------------------------------------------------
+    # SHORT_1d — Intraday Short Selling Entry Handler
+    # ----------------------------------------------------------
+    def _try_enter_short_1d(self, ticker: str, result: dict, scan_date: date):
+        """
+        Evaluate and optionally enter a SHORT_1d intraday short position.
+
+        GATE 1: Profit exit raised to +1.5% (configured in trading_config.py)
+        GATE 2: Global bearish score must be >= RED_ALERT (70) at time of entry
+
+        Decision-price separation model (laptop-closed agnostic):
+          - Entry stored with current price
+          - Force-close at 15:15 IST stored to bearish_trim_decisions
+          - Startup checkpoint executes retroactively on next boot
+
+        Args:
+            ticker:     Stock ticker (e.g., "AXISBANK.NS")
+            result:     Prediction result dict from _analyse_ticker()
+            scan_date:  Date of scan
+        """
+        from trading_config import (
+            SHORT_1D_ENABLED, SHORT_1D_ELIGIBLE_PATTERNS,
+            SHORT_1D_CONFIDENCE_MIN, SHORT_1D_SL_MULTIPLIER,
+            SHORT_1D_RR_RATIO, SHORT_1D_RED_ALERT_GATE,
+            SHORT_1D_MIN_BEARISH_SCORE, SHORT_1D_MAX_POSITIONS,
+            SHORT_1D_PROFIT_EXIT_PCT,
+        )
+
+        if not SHORT_1D_ENABLED:
+            return
+
+        # --- Check tradeable bearish patterns ---
+        patterns = result.get("patterns_tradeable", [])
+        eligible = [p for p in patterns if p in SHORT_1D_ELIGIBLE_PATTERNS]
+        if not eligible:
+            log.debug(f"[SHORT_1d] {ticker}: no eligible bearish patterns {patterns}")
+            return
+
+        # --- Gate 2: Global bearish score must be >= RED_ALERT ---
+        if SHORT_1D_RED_ALERT_GATE:
+            try:
+                from global_sentiment import GlobalSentimentMonitor
+                gsm = GlobalSentimentMonitor()
+                score, _ = gsm.calculate_bearish_score()
+                if score < SHORT_1D_MIN_BEARISH_SCORE:
+                    log.info(
+                        f"[SHORT_1d] {ticker}: bearish score {score} < {SHORT_1D_MIN_BEARISH_SCORE} "
+                        f"(RED_ALERT gate) — skip short"
+                    )
+                    return
+            except Exception as e:
+                log.warning(f"[SHORT_1d] Could not fetch bearish score: {e} — skipping short entry")
+                return
+
+        # --- Confidence check (60% threshold) ---
+        conf = result.get("confidence", "LOW")
+        if conf == "LOW":
+            log.debug(f"[SHORT_1d] {ticker}: confidence {conf} below SHORT_1d threshold")
+            return
+
+        # --- Max concurrent positions cap ---
+        try:
+            cur = self.db.conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE status='OPEN' AND direction='BEARISH' "
+                "AND horizon_label='SHORT_1d'"
+            )
+            active_shorts = cur.fetchone()[0]
+            if active_shorts >= SHORT_1D_MAX_POSITIONS:
+                log.info(f"[SHORT_1d] {ticker}: max {SHORT_1D_MAX_POSITIONS} concurrent SHORT_1d positions reached")
+                return
+        except Exception:
+            pass
+
+        # --- Compute SHORT entry levels ---
+        entry_price = float(result.get("entry", 0))
+        if not entry_price:
+            return
+
+        indicators = result.get("indicators", {})
+        atr_pct = float(indicators.get("atr_14_pct", 2.0) or 2.0)
+
+        sl_price  = entry_price * (1 + atr_pct / 100 * SHORT_1D_SL_MULTIPLIER)
+        sl_pct    = atr_pct * SHORT_1D_SL_MULTIPLIER
+        tp_price  = entry_price * (1 - atr_pct / 100 * SHORT_1D_SL_MULTIPLIER * SHORT_1D_RR_RATIO)
+        tp_pct    = sl_pct * SHORT_1D_RR_RATIO
+        rr_ratio  = SHORT_1D_RR_RATIO
+
+        expiry = scan_date  # SHORT_1d: same-day close
+
+        try:
+            self.db.insert_trade(
+                ticker=ticker,
+                instrument=result.get("instrument", ticker.replace(".NS", "").lower()),
+                sector=result.get("sector", "unknown"),
+                direction="BEARISH",
+                horizon_days=0,          # 0 = intraday / same day
+                horizon_label="SHORT_1d",
+                patterns=",".join(eligible),
+                entry_price=entry_price,
+                target_price=tp_price,
+                sl_price=sl_price,
+                target_pct=round(tp_pct, 4),
+                sl_pct=round(sl_pct, 4),
+                rr_ratio=rr_ratio,
+                predicted_win_rate=result.get("win_rate", 50),
+                predicted_pf=result.get("profit_factor", 1.0),
+                confidence=conf,
+                n_matches=result.get("n_matches", 0),
+                match_tier=result.get("match_tier", "tier_unknown"),
+                entry_date=scan_date.isoformat(),
+                expiry_date=expiry.isoformat(),
+                indicators_json=json.dumps(indicators),
+                entry_regime=result.get("market_regime", "unknown"),
+                entry_confidence=result.get("confidence_score", 0),
+            )
+            log.info(
+                f"[SHORT_1d] ✅ ENTERED SHORT: {ticker} @ ₹{entry_price:.2f} "
+                f"SL ₹{sl_price:.2f} (+{sl_pct:.1f}%) TP ₹{tp_price:.2f} (-{tp_pct:.1f}%) "
+                f"patterns={eligible} profit_exit=+{SHORT_1D_PROFIT_EXIT_PCT}%"
+            )
+        except Exception as e:
+            log.error(f"[SHORT_1d] Failed to insert short trade for {ticker}: {e}")
+
+    # ----------------------------------------------------------
     # SCAN
     # ----------------------------------------------------------
     def scan_date(self, scan_date: date) -> dict:
@@ -1171,12 +1294,16 @@ class PaperTrader:
                     skip_reasons = []
                     h_label = HORIZON_CONFIG[days]["label"]
 
-                    # Direction filter: cash equity cannot hold short overnight
+                    # Direction filter: cash equity cannot hold short overnight.
+                    # EXCEPTION: SHORT_1d intraday shorts routed to separate handler below.
                     hz_direction = hz_data.get("direction", result["direction"])
                     hard_reject = False  # Initialize early to handle direction filter
                     if hz_direction not in ALLOWED_DIRECTIONS:
-                        skip_reasons.append(f"Bearish signal — not tradeable in cash equity")
-                        hard_reject = True  # FIX: Don't enter bearish trades at all!
+                        # Route bearish signals to SHORT_1d handler (not rejected outright)
+                        if hz_direction == "BEARISH" or result.get("predicted_direction") == "bearish":
+                            self._try_enter_short_1d(ticker, result, scan_date)
+                        skip_reasons.append(f"Bearish signal — routed to SHORT_1d handler")
+                        hard_reject = True
 
                     # Horizon-specific WR override
                     base_wr = result.get("win_rate", 0)
