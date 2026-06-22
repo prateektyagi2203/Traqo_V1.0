@@ -47,12 +47,9 @@ ALLOWED_DIRECTIONS = {"BULLISH"}
 # Crypto/commodity instruments without enough training data excluded.
 
 # Indian equities + major global indices that showed OOS PF > 0.9
-# PHASE 1 REBALANCE: 250 → 126 instruments (50% reduction)
-# Rationale: Consolidate to proven winners, boost index coverage (0→18 indices)
-# After 1,000+ trades (3-4 weeks), Phase 2 decision: further cut to 50-80 stocks
-# Based on diagnostic: 277 live trades, 69.7% WR, 3.22 PF — all profitable
+# Expanded to Top 250 NSE stocks (Feb 2026)
 ALLOWED_INSTRUMENTS = {
-    # --- Tier 1: Nifty 50 Core (50 stocks) — highest liquidity, institutional flow ---
+    # --- Indian Equities: Nifty 50 (50 stocks) ---
     "adanient", "adaniports", "apollohosp", "asianpaint", "axisbank",
     "bajajauto", "bajajfinsv", "bajfinance", "bhartiartl", "bpcl",
     "britannia", "cipla", "coalindia", "divislab", "drreddy",
@@ -64,38 +61,69 @@ ALLOWED_INSTRUMENTS = {
     "shriramfin", "sunpharma", "tatamotors", "tatasteel", "tcs",
     "techm", "titan", "trent", "ultracemco", "wipro",
 
-    # --- Tier 2: Nifty Next 50 Best (30 stocks) — high-conviction only ---
-    "abb", "acc", "adanigreen", "ambujacem", "auropharma",
-    "bajajhldng", "bankbaroda", "bergepaint", "biocon", "boschltd",
-    "cholafin", "colpal", "dabur", "dlf", "gail",
-    "godrejcp", "hal", "havells", "indigo", "ioc",
-    "irctc", "jindalstel", "jiofin", "lici", "ltim",
-    "ltts", "lupin", "motherson", "naukri", "nhpc",
+    # --- Indian Equities: Nifty Next 50 (50 stocks) ---
+    "abb", "acc", "adanigreen", "adanipower", "ambujacem",
+    "atgl", "auropharma", "bajajhldng", "bankbaroda", "bel",
+    "bergepaint", "biocon", "boschltd", "canbk", "cholafin",
+    "colpal", "dabur", "dlf", "gail", "godrejcp",
+    "hal", "havells", "icicipruli", "indigo", "ioc",
+    "irctc", "irfc", "jindalstel", "jiofin", "lici",
+    "ltim", "ltts", "lupin", "maxhealth", "motherson",
+    "naukri", "nhpc", "oberoirlty", "ofss", "paytm",
+    "pfc", "pidilitind", "pnb", "polycab", "recltd",
+    "sbicard", "siemens", "srf", "tataconsum", "tatapower",
 
-    # --- Tier 3: Nifty Midcap Best (25 stocks) — strong OOS performers ---
+    # --- Indian Equities: Nifty Midcap 150 (148 stocks) ---
     "aartiind", "abcapital", "abfrl", "aiaeng", "ajantpharm",
-    "alkem", "angelone", "ashokley", "astral", "atul",
-    "bharatforg", "bhel", "coforge", "coromandel", "crompton",
-    "deepakntr", "delhivery", "dixon", "escorts", "exideind",
-    "federalbnk", "fortis", "glenmark", "glaxo", "gmrairport",
+    "alkem", "angelone", "aplapollo", "aplltd", "ashokley",
+    "astral", "atul", "aubank", "balkrisind", "bankindia",
+    "bataindia", "bharatforg", "bhel", "bse", "canfinhome",
+    "carboruniv", "castrolind", "cdsl", "cesc", "cgpower",
+    "chamblfert", "clean", "cochinship", "coforge", "coromandel",
+    "crompton", "cub", "cumminsind", "cyient", "dalbharat",
+    "deepakntr", "delhivery", "devyani", "dixon", "emamiltd",
+    "endurance", "escorts", "exideind", "fact", "federalbnk",
+    "fineorg", "fluorochem", "fortis", "gillette", "glenmark",
+    "glaxo", "gmrairport", "gnfc", "godrejind", "godrejprop",
+    "granules", "graphite", "grindwell", "gujgasltd", "hatsun",
+    "hindpetro", "honaut", "idfcfirstb", "iex", "iifl",
+    "indianb", "indianhotels", "indiamart", "industower", "intellect",
+    "ipcalab", "jkcement", "jswenergy", "jswinfra", "jublfood",
+    "kalyankjil", "kei", "kims", "kpittech", "lalpathlab",
+    "lauruslabs", "lichsgfin", "manappuram", "mankind", "marico",
+    "mazdock", "metrobrand", "mfsl", "mgl", "mphasis",
+    "mrf", "muthootfin", "namindia", "natcopharm", "navinfluor",
+    "nmdc", "oil", "pageind", "patanjali", "persistent",
+    "petronet", "pghh", "phoenixltd", "piind", "polymed",
+    "poonawalla", "prestige", "pvrinox", "radico", "rain",
+    "rajeshexpo", "ramcocem", "ratnamani", "rblbank", "sail",
+    "schaeffler", "shreecem", "sonacoms", "starhealth", "sumichem",
+    "sundarmfin", "sundrmfast", "sunteck", "suntv", "supremeind",
+    "syngene", "tatachem", "tatacomm", "tataelxsi", "tatatech",
+    "tiindia", "timken", "torntpharm", "torntpower", "trident",
+    "tvsmotor", "ubl", "unionbank", "unitdspr", "upl",
+    "vbl", "vedl", "voltas", "whirlpool", "yesbank",
+    "zeel", "zyduslife", "3mindia",
 
-    # --- Indices: CORE FOCUS (4 indices) — institutional flow, leverage ---
-    "nifty50",           # Broad market baseline
-    "banknifty",         # Highest institutional participation, best pattern reliability
-    "niftypsubank",      # Top performer in sector indices, strong institutional concentration
-    "niftysmallcap50",   # NEW: Growth exposure, emerging leaders (lower noise than Smallcap 250)
-
-    # --- Indices: SECONDARY (8 indices) — diversification ---
-    "niftyit", "niftypharma", "niftyauto", "niftymetal",
-    "niftyfmcg", "niftyenergy", "niftyinfra", "niftymedia",
-
-    # --- Global Indices (6) — tail-hedge, overnight volatility context ---
+    # --- Indian Indices ---
+    "nifty50", "banknifty", "niftyit", "niftypharma",
+    "niftyauto", "niftymetal", "niftyfmcg", "niftyenergy",
+    "niftyinfra", "niftymedia", "niftypsubank", "niftyrealty",
+    # --- Global Indices (with sufficient cross-market data) ---
     "dowjones", "nasdaq", "nikkei225", "hangseng",
     "ftse100", "eurostoxx50",
-
-    # --- Commodities (3) — proven OOS edge ---
+    # --- Commodities (proven OOS) ---
     "gold", "silver", "crude_oil",
 }
+
+# Safety guard: prevent accidental consolidation of production universe.
+# Baseline is the pre-consolidation production scope.
+MIN_ALLOWED_INSTRUMENTS = 269
+if len(ALLOWED_INSTRUMENTS) < MIN_ALLOWED_INSTRUMENTS:
+    raise ValueError(
+        f"ALLOWED_INSTRUMENTS shrank to {len(ALLOWED_INSTRUMENTS)}; "
+        f"minimum required is {MIN_ALLOWED_INSTRUMENTS}."
+    )
 
 # Instruments to always exclude (inverse/VIX move oppositely to stocks)
 EXCLUDED_INSTRUMENTS = {"vix", "indiavix"}
