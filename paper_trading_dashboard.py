@@ -2240,6 +2240,45 @@ def render_feedback():
     rules = _load_learned_rules()
     shadow_stats = _get_shadow_trade_stats()
 
+    # Global Bearish Score widget (decision context should remain visible on feedback page)
+    try:
+        from global_sentiment import get_overnight_bearish_score
+        bs = get_overnight_bearish_score()
+        if bs >= 70:
+            bs_bg = "bg-red-50 border-red-200"; bs_icon = "\u26a0\ufe0f"
+            bs_label = "RED ALERT — BTST trims active"; bs_tc = "text-red-700"
+        elif bs >= 40:
+            bs_bg = "bg-amber-50 border-amber-200"; bs_icon = "\u26a1"
+            bs_label = "CAUTION — Elevated bearish risk"; bs_tc = "text-amber-700"
+        else:
+            bs_bg = "bg-green-50 border-green-200"; bs_icon = "\u2705"
+            bs_label = "SAFE — Global markets neutral"; bs_tc = "text-green-700"
+    except Exception:
+        bs = 30; bs_bg = "bg-gray-50 border-gray-200"
+        bs_icon = "\u2014"; bs_label = "Score unavailable"; bs_tc = "text-gray-500"
+
+    bearish_widget = f'''<div class="mb-5 p-4 rounded-xl border {bs_bg} flex items-center justify-between shadow-sm">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">{bs_icon}</span>
+        <div>
+          <p class="text-xs font-medium text-gray-500 uppercase tracking-wide">Global Bearish Score</p>
+          <p class="text-xl font-bold {bs_tc}">{bs} / 100 &nbsp;&mdash;&nbsp; {bs_label}</p>
+          <p class="text-xs text-gray-400 mt-0.5">S&amp;P Futures &middot; VIX &middot; DXY &middot; Oil &middot; Nikkei &middot; Hang Seng &middot; ASX</p>
+        </div>
+      </div>
+      <div class="text-right text-xs text-gray-400 space-y-1">
+        <p>BTST auto-trim: score &gt; 70</p>
+        <p>Intraday trim: delta &gt; 25 pts</p>
+        <p>Early-exit: trajectory &le; 40</p>
+        <p>SHORT_1d gate: score &ge; 70</p>
+        <a href="/api/bearish-score" target="_blank" class="text-blue-500 hover:underline">Live JSON →</a>
+        <a href="/api/pending-trims" target="_blank" class="text-blue-500 hover:underline block">Pending trims →</a>
+        <a href="/api/early-exits" target="_blank" class="text-blue-500 hover:underline block">Dead trades →</a>
+        <a href="/api/short-trades" target="_blank" class="text-blue-500 hover:underline block">Short trades →</a>
+        <a href="/api/short-force-closes" target="_blank" class="text-blue-500 hover:underline block">Short close queue →</a>
+      </div>
+    </div>'''
+
     # ---- Summary stats ----
     total_entries = len(entries)
     updated_at = rules.get("updated_at", "—")
@@ -2694,6 +2733,7 @@ def render_feedback():
         <p class="text-sm text-gray-500 mt-1">How the system learns from trade outcomes — pattern penalties, regime adjustments, and cross-dimensional intelligence</p>
       </div>
     </div>
+    {bearish_widget}
     {cards}
     {shadow_section}
     {pat_section}
