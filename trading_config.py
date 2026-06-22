@@ -161,6 +161,10 @@ WHITELISTED_PATTERNS = {
     "three_stars_south",
     "tri_star_bullish",
     "unique_three_river",
+    # CIO PATTERN PROMOTIONS (OOS-validated dormant patterns)
+    "morning_doji_star",   # OOS 1.19 PF, 49.1% WR, 277 trades — institutional gap-down indecision signal
+    "tweezer_bottom",      # OOS 1.04 PF, 47.1% WR, 635 trades — support exhaustion, reversion to mean
+    "long_legged_doji",    # OOS 1.05 PF, 49.2% WR, high-volatility indecision breakout signal
 }
 
 # Tier A patterns: high-PF patterns where tight SL kills winners
@@ -171,6 +175,12 @@ STRUCTURAL_SL_PATTERNS = {
     "bullish_kicker",      # PF 1.58 → strong reversal needs room
     "ladder_bottom",       # PF 1.57 → multi-candle pattern
     "mat_hold",            # PF 1.70 → continuation pattern
+}
+
+# Patterns valid only in bullish regime (continuation signals require trend context)
+# These patterns have edge only when market trend_short == "bullish"
+PATTERN_BULL_REGIME_ONLY = {
+    "rising_three_methods",  # Bullish continuation: three small candles pause inside two larger bullish candles
 }
 
 # ============================================================
@@ -577,6 +587,7 @@ SHORT_1D_ELIGIBLE_PATTERNS = {
     "dark_cloud_cover", "shooting_star", "bearish_harami", "tweezer_top",
     "bearish_kicker", "gravestone_doji", "advance_block", "bearish_counterattack",
     "three_inside_down", "three_outside_down",
+    "falling_three_methods",  # CIO: Bearish continuation — downtrend pause signals resume; short confirmation
 }
 
 

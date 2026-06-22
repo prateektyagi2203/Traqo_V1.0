@@ -77,6 +77,7 @@ from trading_config import (
     INSTRUMENT_SECTORS,
     ALLOWED_DIRECTIONS,
     is_tradeable_pattern,
+    PATTERN_BULL_REGIME_ONLY,
 )
 
 # FIX #1: Import meta-classifier for secondary filtering
@@ -1466,6 +1467,31 @@ class PaperTrader:
                         _ind = result.get("indicators", {})
                         _ts = _ind.get("trend_short", "neutral")
                         _entry_regime = _ts if _ts in ("bullish", "bearish") else "neutral"
+
+                    # CIO GATE: Regime-dependent pattern gating
+                    # Some patterns (e.g., rising_three_methods) are continuation signals
+                    # that only have edge in confirmed bull trends. Skip if regime mismatch.
+                    if _entry_regime != "bullish":
+                        tradeable_patterns = set(result.get("patterns_tradeable", []))
+                        restricted_patterns = tradeable_patterns & PATTERN_BULL_REGIME_ONLY
+                        if restricted_patterns:
+                            log.info(f"  SKIP: {ticker} {h_label} — bull-regime-only pattern(s) {restricted_patterns} "
+                                   f"in {_entry_regime} regime")
+                            filtered_for_shadow.append({
+                                "ticker": ticker, "instrument": result.get("instrument"),
+                                "direction": hz_direction, "horizon_days": days,
+                                "horizon_label": h_label,
+                                "patterns": ",".join(result.get("patterns_tradeable", [])),
+                                "entry_price": result["entry"],
+                                "target_price": hz_data["target"], "sl_price": hz_data["sl"],
+                                "target_pct": hz_data.get("target_pct"), "sl_pct": hz_data.get("sl_pct"),
+                                "predicted_win_rate": round(wr, 1),
+                                "predicted_pf": result.get("profit_factor"),
+                                "confidence": result.get("confidence"),
+                                "entry_date": date_str, "expiry_date": expiry.isoformat(),
+                                "skip_reasons": [f"Bull-regime-only pattern(s) {restricted_patterns} in {_entry_regime} regime"],
+                            })
+                            continue
 
                     trade = {
                         "ticker": ticker,
