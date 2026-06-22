@@ -47,6 +47,13 @@ except ImportError:
     _gsm = None
     _checkpoint = None
 
+# Intraday early-exit (dead trade detection)
+try:
+    from intraday_exit_monitor import check_intraday_early_exit
+    HAVE_INTRADAY_EXIT_MONITOR = True
+except ImportError:
+    HAVE_INTRADAY_EXIT_MONITOR = False
+
 # Trajectory Health (RAG-informed mid-trade intelligence)
 try:
     from trajectory_health import (

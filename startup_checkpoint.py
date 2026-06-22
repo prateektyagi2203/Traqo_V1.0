@@ -237,6 +237,20 @@ class StartupCheckpoint:
         return results
 
 
+def process_pending_exits_on_startup(db_path: str = DB_PATH_DEFAULT) -> Dict:
+    """
+    Execute all pending early-exit decisions (same table as trims).
+    Identical flow to trims: execute at stored decision price, skip if position closed.
+    """
+    cp = StartupCheckpoint(db_path=db_path)
+    return cp.execute_pending_trims()  # Executes both trims and early-exits from same table
+
+
+def process_pending_exits_on_startup(db_path: str = DB_PATH_DEFAULT) -> Dict:
+    """Alias for process_pending_trims_on_startup() (same table logic)."""
+    return process_pending_trims_on_startup(db_path=db_path)
+
+
 def process_pending_trims_on_startup(db_path: str = DB_PATH_DEFAULT) -> Dict:
     """Convenience function — call this from paper_trader.py startup."""
     cp = StartupCheckpoint(db_path=db_path)

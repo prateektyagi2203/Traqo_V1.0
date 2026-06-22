@@ -531,6 +531,19 @@ MONITOR_PRICE_INTERVAL_MINUTES = 1     # Intraday bearish check frequency
 STORE_DECISION_PRICE_AS = "HIGH"       # Use HIGH of minute candle for decisions
 EXECUTE_RETROACTIVE_TRIMS = True       # Execute pending trims on startup
 
+# ============================================================
+# ITEM 9c: INTRADAY EARLY-EXIT (DEAD TRADE DETECTION)
+# ============================================================
+# BTST_1d positions that are red + weak trajectory past cutoff time.
+# Retroactive execution: laptop offline? Execute at stored decision-time price.
+
+EARLY_EXIT_CUTOFF_TIME = "13:30"       # 1:30 PM IST cutoff
+EARLY_EXIT_PRICE_THRESHOLD = -0.5      # Below -0.5% triggers exit
+EARLY_EXIT_TRAJECTORY_MAX = 40         # Trajectory score <= 40 (CRITICAL/WEAK)
+EARLY_EXIT_POLL_MINUTES = 5            # Poll every 5 min during market hours
+EXIT_FULL_POSITION = True              # Exit 100% (not partial trim)
+EXECUTE_RETROACTIVE_EXITS = True       # Execute pending exits on startup
+
 
 # ============================================================
 # ITEM 5: ML CLASSIFIER CONFIG

@@ -1085,8 +1085,10 @@ def render_signals():
       <div class="text-right text-xs text-gray-400 space-y-1">
         <p>BTST auto-trim: score &gt; 70</p>
         <p>Intraday trim: delta &gt; 25 pts</p>
+        <p>Early-exit: trajectory &le; 40</p>
         <a href="/api/bearish-score" target="_blank" class="text-blue-500 hover:underline">Live JSON →</a>
         <a href="/api/pending-trims" target="_blank" class="text-blue-500 hover:underline block">Pending trims →</a>
+        <a href="/api/early-exits" target="_blank" class="text-blue-500 hover:underline block">Dead trades →</a>
       </div>
     </div>'''
 
@@ -3510,6 +3512,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload = json.dumps({
                     "count": len(pending),
                     "pending_trims": pending,
+                    "timestamp": datetime.now().isoformat(),
+                }, default=str)
+            except Exception as e:
+                payload = json.dumps({"count": 0, "error": str(e)})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(payload.encode("utf-8"))
+            return
+
+        if path == "api/early-exits":
+            # Pending early-exit decisions JSON endpoint
+            try:
+                from startup_checkpoint import StartupCheckpoint
+                import sqlite3
+                cp = StartupCheckpoint()
+                cp.ensure_trim_table()
+                # Query early-exit decisions (trim_reason contains "Early-exit")
+                conn = sqlite3.connect(cp.DB_PATH)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT * FROM bearish_trim_decisions
+                    WHERE execution_status = 'PENDING'
+                      AND trim_reason LIKE '%Early-exit%'
+                    ORDER BY decision_timestamp DESC
+                """)
+                early_exits = [dict(row) for row in cur.fetchall()]
+                conn.close()
+                payload = json.dumps({
+                    "count": len(early_exits),
+                    "pending_early_exits": early_exits,
                     "timestamp": datetime.now().isoformat(),
                 }, default=str)
             except Exception as e:
