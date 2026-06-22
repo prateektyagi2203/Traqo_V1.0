@@ -242,6 +242,49 @@ Run `python setup_traqo.py` to generate all of them automatically.
 
 ---
 
+## Versioned Runtime Artifact (Exact Local RAG State)
+
+If you want anyone cloning the repository to reproduce your current runtime state (including generated data, model files, trade DB, and feedback runtime files), publish a **versioned GitHub Release artifact**.
+
+### 1. Build Release Artifacts Locally
+
+```bash
+python runtime_artifact.py pack --version v2026.06.22
+```
+
+This creates a `release_artifacts/` folder containing:
+
+- One or more zipped runtime assets (auto-chunked for large datasets such as `rag_documents_v2/`)
+- A manifest file: `traqo-runtime-<version>-manifest.json`
+
+### 2. Publish Artifacts to GitHub Releases
+
+Install GitHub CLI (`gh`) and run the suggested command printed by the pack step.
+
+Example:
+
+```bash
+gh release create v2026.06.22 release_artifacts/* --title "Traqo Runtime v2026.06.22" --notes "Versioned runtime artifact snapshot"
+```
+
+### 3. Restore Exact Runtime State on Another Machine
+
+After cloning the repository and downloading release assets into `release_artifacts/`:
+
+```bash
+python runtime_artifact.py restore --manifest release_artifacts/traqo-runtime-v2026.06.22-manifest.json --force
+```
+
+This restores generated runtime folders and files (for example `rag_documents_v2/`, `models/`, `paper_trades/`) directly into the repository workspace.
+
+Notes:
+
+- Use `--force` to overwrite existing local runtime files.
+- Use `--dry-run` first if you want to preview restore operations.
+- Keep version tags aligned between your git commit and release artifact for auditability.
+
+---
+
 ## Tech Stack
 
 | Component | Technology |

@@ -53,3 +53,6 @@ backtest_walkforward_results.json
 backtest_rolling_results.json
 backtest_ab_results.json
 meta_classifier_results.json
+
+# --- Runtime release bundles (generated locally for GitHub Releases) ---
+release_artifacts/
