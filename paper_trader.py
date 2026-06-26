@@ -82,6 +82,16 @@ from trading_config import (
     PATTERN_BULL_REGIME_ONLY,
     BEARISH_SCORE_YELLOW_ALERT,
     MINUTE_REPLAY_ENABLED,
+    PRODUCTION_FILTERS,
+    COST_DELIVERY_PCT,
+    COST_INTRADAY_PCT,
+    get_trade_cost_pct,
+    MAX_POSITIONS_PER_SECTOR,
+    MAX_MONTHLY_LOSS_PCT,
+    PAPER_TRADE_CAPITAL,
+    MAX_CONCURRENT_POSITIONS,
+    MAX_DRAWDOWN_PCT,
+    MAX_DAILY_LOSS_PCT,
 )
 
 # FIX #1: Import meta-classifier for secondary filtering
@@ -125,6 +135,14 @@ try:
 except ImportError:
     pass
 
+# Intraday Early-Exit Monitor
+HAVE_INTRADAY_MONITOR = False
+try:
+    from intraday_exit_monitor import check_intraday_early_exit
+    HAVE_INTRADAY_MONITOR = True
+except ImportError:
+    pass
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -145,10 +163,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("paper_trader")
 
-# Signal quality filters
-MIN_WIN_RATE = 30.0  # Lowered from 35.0 (Mar 20: shadow WR=38%, but boost logic reversed → match predicted WR threshold)
-MIN_CONFIDENCE = "MEDIUM"
-MIN_RR_RATIO = 1.5
+# Signal quality filters — single source of truth from trading_config.PRODUCTION_FILTERS
+# (was: MIN_WIN_RATE = 30.0 — local constant that diverged from production config)
+MIN_WIN_RATE = PRODUCTION_FILTERS["min_win_rate"]  # 45.0 %
+MIN_CONFIDENCE = PRODUCTION_FILTERS["min_confidence"]
+MIN_RR_RATIO = PRODUCTION_FILTERS["min_rr_ratio"]
 MIN_MATCHES = 5
 
 # FIX #2: NEW FILTER CONSTANTS
@@ -994,6 +1013,187 @@ class PaperTrader:
         log.info("Paper Trader initialized")
 
     # ----------------------------------------------------------
+    # D5: yfinance RETRY HELPER
+    # ----------------------------------------------------------
+    @staticmethod
+    def _yf_download(ticker: str, max_retries: int = 3, retry_delay: float = 2.0, **kwargs):
+        """Wrap yf.download() with exponential-backoff retry.
+
+        Falls back silently to an empty DataFrame after `max_retries` failures,
+        so callers can do `if df.empty: continue` as usual.
+        """
+        import time as _time
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                df = yf.download(ticker, **kwargs)
+                if df is not None and not df.empty:
+                    return df
+                # Empty result — retry (may be a transient yfinance glitch)
+            except Exception as exc:
+                last_exc = exc
+            if attempt < max_retries:
+                _time.sleep(retry_delay * attempt)
+        if last_exc:
+            log.warning(f"[D5] yf.download({ticker}) failed after {max_retries} attempts: {last_exc}")
+        return pd.DataFrame()
+
+    # ----------------------------------------------------------
+    # D2: QUARTERLY RETRAIN CADENCE
+    # ----------------------------------------------------------
+    _RETRAIN_STAMP_FILE = "models/last_retrain.txt"
+
+    def _check_quarterly_retrain(self) -> bool:
+        """Retrain meta-classifier if >= 90 days have elapsed since last retrain.
+
+        Writes a timestamp file so the check persists across restarts.
+        Returns True if retrain was triggered, False otherwise.
+        """
+        import time as _time
+        if not HAVE_META_CLASSIFIER:
+            return False
+        RETRAIN_INTERVAL_DAYS = 90
+        stamp = self._RETRAIN_STAMP_FILE
+        last_retrain_days = float("inf")
+        try:
+            if os.path.exists(stamp):
+                mtime = os.path.getmtime(stamp)
+                last_retrain_days = (_time.time() - mtime) / 86400
+        except Exception:
+            pass
+        if last_retrain_days < RETRAIN_INTERVAL_DAYS:
+            log.info(f"[D2] Retrain not due ({last_retrain_days:.0f}d < {RETRAIN_INTERVAL_DAYS}d)")
+            return False
+        log.info(f"[D2] Quarterly retrain triggered ({last_retrain_days:.0f}d since last)")
+        try:
+            clf = MetaClassifier()
+            metrics = clf.train()
+            auc = metrics.get("cv_auc_mean", 0)
+            if metrics.get("disabled"):
+                log.warning(f"[D2] Retrain completed but meta-classifier DISABLED (AUC={auc:.3f} < 0.53)")
+            else:
+                log.info(f"[D2] Retrain complete. CV-AUC={auc:.3f}, trades={metrics.get('n_trades', '?')}")
+            # Touch the stamp file
+            os.makedirs(os.path.dirname(stamp), exist_ok=True)
+            with open(stamp, "w") as f:
+                f.write(date.today().isoformat())
+            return True
+        except Exception as e:
+            log.warning(f"[D2] Quarterly retrain failed: {e}")
+            return False
+
+    # ----------------------------------------------------------
+    # A2: BENCHMARK ALPHA vs NIFTY 50
+    # ----------------------------------------------------------
+    def compute_benchmark_alpha(self) -> dict:
+        """Compare paper portfolio return vs Nifty50 buy-and-hold over the same period.
+
+        Returns:
+          portfolio_return_pct, benchmark_return_pct, alpha_pct,
+          first_trade_date, last_trade_date
+        """
+        try:
+            rows = self.db.conn.execute(
+                "SELECT exit_date, SUM(actual_return_pct) "
+                "FROM trades WHERE status NOT IN ('OPEN','CANCELLED') "
+                "GROUP BY exit_date ORDER BY exit_date"
+            ).fetchall()
+            if not rows:
+                return {"error": "No closed trades"}
+
+            first_date = rows[0][0][:10]
+            last_date = rows[-1][0][:10]
+            portfolio_return = sum(r[1] or 0 for r in rows)
+
+            df_nifty = self._yf_download(
+                "^NSEI",
+                start=first_date,
+                end=(date.fromisoformat(last_date) + timedelta(days=1)).isoformat(),
+                progress=False,
+                multi_level_index=False,
+            )
+            if df_nifty.empty:
+                return {"error": "Nifty50 download failed", "portfolio_return_pct": round(portfolio_return, 2)}
+
+            nifty_start = float(df_nifty["Close"].iloc[0])
+            nifty_end = float(df_nifty["Close"].iloc[-1])
+            benchmark_return = (nifty_end - nifty_start) / nifty_start * 100
+            alpha = portfolio_return - benchmark_return
+
+            return {
+                "portfolio_return_pct": round(portfolio_return, 2),
+                "benchmark_return_pct": round(benchmark_return, 2),
+                "alpha_pct": round(alpha, 2),
+                "first_trade_date": first_date,
+                "last_trade_date": last_date,
+                "nifty_start": round(nifty_start, 2),
+                "nifty_end": round(nifty_end, 2),
+            }
+        except Exception as e:
+            log.warning(f"[A2] Benchmark alpha failed: {e}")
+            return {"error": str(e)}
+
+    # ----------------------------------------------------------
+    # A3: BOOTSTRAP CI ON LIVE WIN RATE & PROFIT FACTOR
+    # ----------------------------------------------------------
+    def compute_bootstrap_ci(self, n_bootstrap: int = 2000) -> dict:
+        """Bootstrap 95% CI on live win-rate and profit-factor.
+
+        Returns:
+          win_rate, pf, wr_ci_lower, wr_ci_upper, pf_ci_lower, pf_ci_upper, n_trades
+        """
+        import random as _rand
+        try:
+            rows = self.db.conn.execute(
+                "SELECT actual_return_pct, status FROM trades "
+                "WHERE status NOT IN ('OPEN','CANCELLED')"
+            ).fetchall()
+            if len(rows) < 10:
+                return {"error": f"Need >= 10 closed trades (have {len(rows)})"}
+
+            returns = [(float(r[0] or 0), r[1]) for r in rows]
+            n = len(returns)
+
+            def _metrics(sample):
+                wins = sum(1 for _, s in sample if s in ("WON", "EXPIRED_WIN"))
+                losses = sum(1 for _, s in sample if s in ("LOST", "EXPIRED_LOSS"))
+                wr = wins / len(sample) * 100 if sample else 0
+                win_rets = [r for r, s in sample if s in ("WON", "EXPIRED_WIN")]
+                loss_rets = [abs(r) for r, s in sample if s in ("LOST", "EXPIRED_LOSS")]
+                avg_w = sum(win_rets) / len(win_rets) if win_rets else 0
+                avg_l = sum(loss_rets) / len(loss_rets) if loss_rets else 0
+                pf = (avg_w * wins) / (avg_l * losses) if (losses and avg_l) else 0
+                return wr, pf
+
+            actual_wr, actual_pf = _metrics(returns)
+
+            boot_wrs = []
+            boot_pfs = []
+            for _ in range(n_bootstrap):
+                sample = [returns[_rand.randint(0, n - 1)] for _ in range(n)]
+                wr_b, pf_b = _metrics(sample)
+                boot_wrs.append(wr_b)
+                boot_pfs.append(pf_b)
+
+            boot_wrs.sort()
+            boot_pfs.sort()
+            lo, hi = int(n_bootstrap * 0.025), int(n_bootstrap * 0.975)
+
+            return {
+                "n_trades": n,
+                "win_rate": round(actual_wr, 1),
+                "profit_factor": round(actual_pf, 2),
+                "wr_ci_lower": round(boot_wrs[lo], 1),
+                "wr_ci_upper": round(boot_wrs[hi], 1),
+                "pf_ci_lower": round(boot_pfs[lo], 2),
+                "pf_ci_upper": round(boot_pfs[hi], 2),
+                "confidence": "95%",
+            }
+        except Exception as e:
+            log.warning(f"[A3] Bootstrap CI failed: {e}")
+            return {"error": str(e)}
+
+    # ----------------------------------------------------------
     # MAIN ENTRY POINT
     # ----------------------------------------------------------
     def run(self) -> dict:
@@ -1039,6 +1239,11 @@ class PaperTrader:
             log.info(f"[STARTUP] Overnight bearish score: {score}/100 [{label}]")
         except Exception:
             self.current_bearish_score = 30
+
+        # ---------------------------------------------------------------
+        # STEP 0b2: D2 — Quarterly meta-classifier retrain check
+        # ---------------------------------------------------------------
+        self._check_quarterly_retrain()
 
         # ---------------------------------------------------------------
         # STEP 0c: Minute-level replay for missed intraday protection
@@ -1188,7 +1393,7 @@ class PaperTrader:
 
                 row = df.loc[check_date]
                 high, low, close = float(row["High"]), float(row["Low"]), float(row["Close"])
-                result = self._check_trade_exit(trade, high, low, close)
+                result = self._check_trade_exit(trade, high, low, close, exit_date_str=check_date.isoformat())
                 if result:
                     self.db.close_trade(
                         trade["id"], result["exit_price"], check_date.isoformat(),
@@ -1954,14 +2159,105 @@ class PaperTrader:
 
         entered = 0
         skipped = 0
+
+        # C5: Monthly-loss kill switch \u2014 block ALL new entries if monthly loss > MAX_MONTHLY_LOSS_PCT
+        monthly_loss_blocked = False
+        try:
+            month_start = date.today().replace(day=1).isoformat()
+            monthly_closed = self.db.conn.execute(
+                "SELECT SUM(actual_return_pct) FROM trades "
+                "WHERE status NOT IN ('OPEN') AND exit_date >= ?",
+                (month_start,)
+            ).fetchone()[0] or 0.0
+            monthly_loss_pct = float(monthly_closed)  # sum of % returns this month
+            if monthly_loss_pct < -MAX_MONTHLY_LOSS_PCT:
+                monthly_loss_blocked = True
+                log.warning(
+                    f"[MONTHLY KILL] Monthly P&L {monthly_loss_pct:.1f}% < "
+                    f"-{MAX_MONTHLY_LOSS_PCT}% \u2014 blocking ALL new entries this month"
+                )
+        except Exception as e:
+            log.warning(f"[MONTHLY KILL] Monthly loss check failed: {e}")
+
+        # C5: Snapshot of current open sector counts for sector-limit check
+        open_sector_counts: dict = {}
+        try:
+            open_trades_snap = self.db.get_open_trades()
+            for ot in open_trades_snap:
+                sec = ot.get("sector") or INSTRUMENT_SECTORS.get(ot.get("ticker", ""), "unknown")
+                open_sector_counts[sec] = open_sector_counts.get(sec, 0) + 1
+        except Exception as e:
+            log.warning(f"[SECTOR LIMIT] Sector count snapshot failed: {e}")
+
+        # D4: Drawdown governor — block new entries if portfolio DD > MAX_DRAWDOWN_PCT
+        drawdown_blocked = False
+        try:
+            all_rets = self.db.conn.execute(
+                "SELECT actual_return_pct FROM trades WHERE status NOT IN ('OPEN','CANCELLED') ORDER BY exit_date, id"
+            ).fetchall()
+            if all_rets:
+                cumulative = 0.0
+                peak = 0.0
+                for (r,) in all_rets:
+                    cumulative += (r or 0.0)
+                    if cumulative > peak:
+                        peak = cumulative
+                current_dd = peak - cumulative  # positive = drawdown from peak
+                if current_dd >= MAX_DRAWDOWN_PCT:
+                    drawdown_blocked = True
+                    log.warning(
+                        f"[DRAWDOWN KILL] Current DD {current_dd:.1f}% >= "
+                        f"{MAX_DRAWDOWN_PCT}% — blocking ALL new entries"
+                    )
+        except Exception as e:
+            log.warning(f"[DRAWDOWN KILL] Drawdown check failed: {e}")
+
+        # D4: Daily-loss kill switch — block new entries if today's closed P&L < -MAX_DAILY_LOSS_PCT
+        daily_loss_blocked = False
+        try:
+            today_str = date.today().isoformat()
+            daily_ret = self.db.conn.execute(
+                "SELECT SUM(actual_return_pct) FROM trades WHERE status NOT IN ('OPEN') AND exit_date >= ?",
+                (today_str,)
+            ).fetchone()[0] or 0.0
+            if float(daily_ret) < -MAX_DAILY_LOSS_PCT:
+                daily_loss_blocked = True
+                log.warning(
+                    f"[DAILY LOSS KILL] Today's P&L {float(daily_ret):.1f}% < "
+                    f"-{MAX_DAILY_LOSS_PCT}% — blocking new entries today"
+                )
+        except Exception as e:
+            log.warning(f"[DAILY LOSS KILL] Daily loss check failed: {e}")
+
         for idx in approved_indices:
             if idx < 0 or idx >= len(signals):
                 continue
             sig = signals[idx]
+            # Block ALL entries when monthly loss kill switch is active
+            if monthly_loss_blocked:
+                log.info(f"  BLOCKED (monthly loss kill): {sig['ticker']} {sig.get('horizon_label', '')}")
+                skipped += 1
+                continue
+            # D4: Block ALL entries when drawdown or daily-loss kill is active
+            if drawdown_blocked:
+                log.info(f"  BLOCKED (drawdown kill): {sig['ticker']} {sig.get('horizon_label', '')}")
+                skipped += 1
+                continue
+            if daily_loss_blocked:
+                log.info(f"  BLOCKED (daily loss kill): {sig['ticker']} {sig.get('horizon_label', '')}")
+                skipped += 1
+                continue
             # Block BULLISH entries when bearish score >= YELLOW_ALERT
             if block_bullish_entries and sig.get("direction", "").upper() == "BULLISH":
                 log.info(f"  BLOCKED (YELLOW score={entry_bearish_score}): "
                          f"{sig['ticker']} {sig.get('horizon_label', '')}")
+                skipped += 1
+                continue
+            # C5: Sector limit \u2014 block entry if sector already at MAX_POSITIONS_PER_SECTOR
+            sig_sector = sig.get("sector") or INSTRUMENT_SECTORS.get(sig.get("ticker", ""), "unknown")
+            if open_sector_counts.get(sig_sector, 0) >= MAX_POSITIONS_PER_SECTOR:
+                log.info(f"  BLOCKED (sector limit {MAX_POSITIONS_PER_SECTOR}): "
+                         f"{sig['ticker']} sector={sig_sector}")
                 skipped += 1
                 continue
             trade = {k: v for k, v in sig.items() if k not in ("skip_reasons", "status")}
@@ -1969,6 +2265,7 @@ class PaperTrader:
             row_id = self.db.insert_trade(trade)
             if row_id:
                 entered += 1
+                open_sector_counts[sig_sector] = open_sector_counts.get(sig_sector, 0) + 1
                 log.info(f"  APPROVED: {sig['ticker']} {sig['horizon_label']} "
                          f"{sig['direction']} @ {sig['entry_price']:.2f}")
             else:
@@ -2150,7 +2447,7 @@ class PaperTrader:
                 earliest = min(date.fromisoformat(t["entry_date"]) for t in trades)
                 start_str = (earliest - timedelta(days=3)).strftime("%Y-%m-%d")
                 end_str = (check_date + timedelta(days=1)).strftime("%Y-%m-%d")
-                df = yf.download(ticker, start=start_str, end=end_str, progress=False, multi_level_index=False)
+                df = self._yf_download(ticker, start=start_str, end=end_str, progress=False, multi_level_index=False)
                 if df.empty:
                     continue
                 df.index = pd.to_datetime(df.index).date
@@ -2167,9 +2464,11 @@ class PaperTrader:
                     trade_closed = False
                     for candle_date, row in relevant.iterrows():
                         h, l, c = float(row["High"]), float(row["Low"]), float(row["Close"])
-                        result = self._check_trade_exit(trade, h, l, c)
+                        o = float(row["Open"]) if "Open" in row else None
+                        d_str = candle_date.isoformat() if isinstance(candle_date, date) else str(candle_date)
+                        trade_with_open = {**trade, "open_price_on_exit_day": o}
+                        result = self._check_trade_exit(trade_with_open, h, l, c, exit_date_str=d_str)
                         if result:
-                            d_str = candle_date.isoformat() if isinstance(candle_date, date) else str(candle_date)
                             self.db.close_trade(
                                 trade["id"], result["exit_price"], d_str,
                                 result["exit_reason"], result["actual_return_pct"],
@@ -2186,7 +2485,7 @@ class PaperTrader:
                         mask_exp = df.index <= expiry_dt
                         if mask_exp.any():
                             last_close = float(df.loc[mask_exp].iloc[-1]["Close"])
-                            ret = self._calc_return(trade, last_close)
+                            ret = self._calc_return(trade, last_close, expiry_dt.isoformat())
                             status = "EXPIRED_WIN" if ret > 0 else "EXPIRED_LOSS"
                             self.db.close_trade(
                                 trade["id"], last_close, expiry_dt.isoformat(),
@@ -2205,11 +2504,24 @@ class PaperTrader:
         # --- TIER 1: Risk-based early exits ---
         risk_exits = self._apply_risk_exits(check_date)
 
+        # --- C1: Intraday dead-trade early-exit detection ---
+        intraday_exits = 0
+        if HAVE_INTRADAY_MONITOR:
+            try:
+                triggered = check_intraday_early_exit(self.db.get_open_trades())
+                intraday_exits = len(triggered)
+                if intraday_exits:
+                    log.warning(f"[INTRADAY MONITOR] {intraday_exits} dead-trade exit(s) logged for retroactive execution")
+            except Exception as e:
+                log.warning(f"[INTRADAY MONITOR] check failed: {e}")
+
         log.info(f"MONITOR DONE: {checked} checked, {closed} closed"
                  f"{f', {shadow_closed} shadow closed' if shadow_closed else ''}"
-                 f"{f', {risk_exits} risk exits' if risk_exits else ''}")
+                 f"{f', {risk_exits} risk exits' if risk_exits else ''}"
+                 f"{f', {intraday_exits} intraday exits queued' if intraday_exits else ''}")
         return {"checked": checked, "closed": closed,
-                "shadow_closed": shadow_closed, "risk_exits": risk_exits}
+                "shadow_closed": shadow_closed, "risk_exits": risk_exits,
+                "intraday_exits": intraday_exits}
 
     # ----------------------------------------------------------
     # TIER 1: POSITION RISK CHECK + EARLY EXITS
@@ -2253,7 +2565,7 @@ class PaperTrader:
                 if trade is None:
                     continue
                 try:
-                    df = yf.download(trade["ticker"], period="5d", progress=False, multi_level_index=False)
+                    df = self._yf_download(trade["ticker"], period="5d", progress=False, multi_level_index=False)
                     if df is None or df.empty:
                         continue
                     last_close = float(df["Close"].iloc[-1])
@@ -2303,35 +2615,113 @@ class PaperTrader:
                 except Exception as e:
                     log.warning(f"  Risk reduce failed for {h['ticker']}: {e}")
 
+        # C2: Mid-hold regime re-eval — force-exit BULLISH positions that are now
+        # in a bearish regime AND at least 1 day past entry (not covered by C3 day-0 crash).
+        if HAVE_POSITION_RISK_MONITOR:
+            try:
+                current_regime = get_live_regime()
+                regime_dir = (current_regime.get("direction") or "").upper()  # "BEARISH" | "BULLISH" | "NEUTRAL"
+                if regime_dir == "BEARISH":
+                    regime_open = self.db.get_open_trades()
+                    for trade in regime_open:
+                        try:
+                            entry_dt = date.fromisoformat(trade["entry_date"])
+                            if (check_date - entry_dt).days < 1:
+                                continue  # Day-0 already handled by C3
+                            direction = (trade.get("direction") or "").upper()
+                            if direction != "BULLISH":
+                                continue
+                            # Only act on swing trades (>=3d) — don't close 1-day BTST on regime
+                            horizon_days = trade.get("horizon_days", 1)
+                            if horizon_days < 3:
+                                continue
+                            # Check already have an exit queued
+                            trade_id = trade["id"]
+                            if any(h["trade_id"] == trade_id and h["action"] == "EXIT IMMEDIATELY"
+                                   for h in health_results):
+                                continue
+                            # Force-exit at last close
+                            df_r = self._yf_download(trade["ticker"], period="5d", progress=False, multi_level_index=False)
+                            if df_r is None or df_r.empty:
+                                continue
+                            last_close = float(df_r["Close"].iloc[-1])
+                            ret = self._calc_return(trade, last_close, check_date.isoformat())
+                            self.db.close_trade(
+                                trade_id, last_close, check_date.isoformat(),
+                                "regime_flip_exit (bearish regime, swing position)",
+                                ret, "LOST" if ret < 0 else "WON",
+                            )
+                            exits_done += 1
+                            log.info(
+                                f"  C2 REGIME EXIT: {trade['ticker']} {trade.get('horizon_label','')} "
+                                f"regime={regime_dir} → closed ({ret:+.2f}%)"
+                            )
+                        except Exception as e:
+                            log.warning(f"  C2 regime exit failed for {trade.get('ticker')}: {e}")
+            except Exception as e:
+                log.warning(f"C2 mid-hold regime re-eval failed: {e}")
+
         return exits_done
 
     def _check_trade_exit(self, trade: dict, high: float, low: float,
-                          close: float) -> Optional[dict]:
+                          close: float, exit_date_str: str = None) -> Optional[dict]:
         direction = trade["direction"]
         target = trade["target_price"]
         sl = trade["sl_price"]
+        open_price = trade.get("open_price_on_exit_day", None)  # may be absent
 
         if direction == "BULLISH":
-            if low <= sl:
+            sl_hit = low <= sl
+            tgt_hit = high >= target
+            if sl_hit and tgt_hit:
+                # C6: Both levels inside the candle — use open-price proximity to resolve.
+                # If open >= target: target was hit on the open (gap-up), award WIN.
+                # Otherwise: SL is assumed to be hit first (conservative).
+                if open_price is not None and open_price >= target:
+                    return {"exit_price": target, "exit_reason": "target_hit",
+                            "actual_return_pct": self._calc_return(trade, target, exit_date_str), "status": "WON"}
                 return {"exit_price": sl, "exit_reason": "sl_hit",
-                        "actual_return_pct": self._calc_return(trade, sl), "status": "LOST"}
-            if high >= target:
+                        "actual_return_pct": self._calc_return(trade, sl, exit_date_str), "status": "LOST"}
+            if sl_hit:
+                return {"exit_price": sl, "exit_reason": "sl_hit",
+                        "actual_return_pct": self._calc_return(trade, sl, exit_date_str), "status": "LOST"}
+            if tgt_hit:
                 return {"exit_price": target, "exit_reason": "target_hit",
-                        "actual_return_pct": self._calc_return(trade, target), "status": "WON"}
+                        "actual_return_pct": self._calc_return(trade, target, exit_date_str), "status": "WON"}
         else:
-            if high >= sl:
+            sl_hit = high >= sl
+            tgt_hit = low <= target
+            if sl_hit and tgt_hit:
+                # C6: Both inside candle. If open <= target: target hit on open (gap-down), WIN.
+                if open_price is not None and open_price <= target:
+                    return {"exit_price": target, "exit_reason": "target_hit",
+                            "actual_return_pct": self._calc_return(trade, target, exit_date_str), "status": "WON"}
                 return {"exit_price": sl, "exit_reason": "sl_hit",
-                        "actual_return_pct": self._calc_return(trade, sl), "status": "LOST"}
-            if low <= target:
+                        "actual_return_pct": self._calc_return(trade, sl, exit_date_str), "status": "LOST"}
+            if sl_hit:
+                return {"exit_price": sl, "exit_reason": "sl_hit",
+                        "actual_return_pct": self._calc_return(trade, sl, exit_date_str), "status": "LOST"}
+            if tgt_hit:
                 return {"exit_price": target, "exit_reason": "target_hit",
-                        "actual_return_pct": self._calc_return(trade, target), "status": "WON"}
+                        "actual_return_pct": self._calc_return(trade, target, exit_date_str), "status": "WON"}
         return None
 
-    def _calc_return(self, trade: dict, exit_price: float) -> float:
+    def _calc_return(self, trade: dict, exit_price: float,
+                     exit_date_str: str = None) -> float:
+        """Calculate net return after deducting the applicable trading cost.
+
+        Uses the two-tier cost model:
+          - Same-day (intraday):  0.07% round-trip  (SHORT_1d exits same day)
+          - Overnight/multi-day: 0.25% round-trip  (BTST, Swing 3/5/10d)
+        """
         entry = trade["entry_price"]
+        entry_date_str = trade.get("entry_date", "")
+        cost_pct = get_trade_cost_pct(entry_date_str, exit_date_str or "")
         if trade["direction"] == "BULLISH":
-            return round((exit_price - entry) / entry * 100, 2)
-        return round((entry - exit_price) / entry * 100, 2)
+            gross = (exit_price - entry) / entry * 100
+        else:
+            gross = (entry - exit_price) / entry * 100
+        return round(gross - cost_pct, 2)
 
     # ----------------------------------------------------------
     # SHADOW TRADE MONITOR (#6)
@@ -2370,9 +2760,9 @@ class PaperTrader:
                     trade_closed = False
                     for candle_date, row in relevant.iterrows():
                         h, l, c = float(row["High"]), float(row["Low"]), float(row["Close"])
-                        result = self._check_trade_exit(trade, h, l, c)
+                        d_str = candle_date.isoformat() if isinstance(candle_date, date) else str(candle_date)
+                        result = self._check_trade_exit(trade, h, l, c, exit_date_str=d_str)
                         if result:
-                            d_str = candle_date.isoformat() if isinstance(candle_date, date) else str(candle_date)
                             shadow_status = f"SHADOW_{result['status']}"
                             self.db.close_shadow_trade(
                                 trade["id"], result["exit_price"], d_str,
@@ -2387,7 +2777,7 @@ class PaperTrader:
                         mask_exp = df.index <= expiry_dt
                         if mask_exp.any():
                             last_close = float(df.loc[mask_exp].iloc[-1]["Close"])
-                            ret = self._calc_return(trade, last_close)
+                            ret = self._calc_return(trade, last_close, expiry_dt.isoformat())
                             status = "SHADOW_EXPIRED_WIN" if ret > 0 else "SHADOW_EXPIRED_LOSS"
                             self.db.close_shadow_trade(
                                 trade["id"], last_close, expiry_dt.isoformat(),
@@ -2725,7 +3115,7 @@ class PaperTrader:
 
             for pattern, stats in pattern_stats.items():
                 total = stats["wins"] + stats["losses"]
-                if total >= 2:
+                if total >= 3:  # B2: raised from 2 — at least 3 trades before writing pattern stats
                     win_rate = stats["wins"] / total * 100
                     # Filter out None values before computing mean
                     valid_returns = [r for r in stats["returns"] if r is not None]
@@ -2737,11 +3127,11 @@ class PaperTrader:
 
                     # Per-pattern volume breakdown (#5)
                     vol_info = {}
-                    if stats["vol_conf_total"] >= 2:
+                    if stats["vol_conf_total"] >= 5:  # B2: raised from 2
                         vol_info["vol_confirmed_wr"] = round(
                             stats["vol_conf_wins"] / stats["vol_conf_total"] * 100, 1)
                         vol_info["vol_confirmed_n"] = stats["vol_conf_total"]
-                    if stats["vol_no_total"] >= 2:
+                    if stats["vol_no_total"] >= 5:  # B2: raised from 2
                         vol_info["vol_unconfirmed_wr"] = round(
                             stats["vol_no_wins"] / stats["vol_no_total"] * 100, 1)
                         vol_info["vol_unconfirmed_n"] = stats["vol_no_total"]
@@ -2767,7 +3157,7 @@ class PaperTrader:
             regime_adjustments = {}
             for rkey, rs in regime_stats.items():
                 total = rs["wins"] + rs["losses"]
-                if total >= 2:
+                if total >= 3:  # B2: raised from 2
                     wr = rs["wins"] / total * 100
                     decay_wr = (rs["weighted_wins"] / rs["weighted_total"] * 100
                                 if rs["weighted_total"] > 0 else wr)
@@ -2789,7 +3179,7 @@ class PaperTrader:
             horizon_adjustments = {}
             for hkey, hs in horizon_stats.items():
                 total = hs["wins"] + hs["losses"]
-                if total >= 2:
+                if total >= 3:  # B2: raised from 2
                     wr = hs["wins"] / total * 100
                     decay_wr = (hs["weighted_wins"] / hs["weighted_total"] * 100
                                 if hs["weighted_total"] > 0 else wr)
@@ -2811,7 +3201,7 @@ class PaperTrader:
             triple_adjustments = {}
             for tkey, ts in triple_stats.items():
                 total = ts["wins"] + ts["losses"]
-                if total >= 2:
+                if total >= 5:  # B2: raised from 2 — triple keys are highest-noise, need 5+
                     wr = ts["wins"] / total * 100
                     decay_wr = (ts["weighted_wins"] / ts["weighted_total"] * 100
                                 if ts["weighted_total"] > 0 else wr)
@@ -2833,7 +3223,7 @@ class PaperTrader:
             sector_adjustments = {}
             for skey, ss in sector_stats.items():
                 total = ss["wins"] + ss["losses"]
-                if total >= 2:
+                if total >= 3:  # B2: raised from 2
                     wr = ss["wins"] / total * 100
                     decay_wr = (ss["weighted_wins"] / ss["weighted_total"] * 100
                                 if ss["weighted_total"] > 0 else wr)

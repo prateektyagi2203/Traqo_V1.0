@@ -44,6 +44,7 @@ from trading_config import (
     SLIPPAGE_COMMISSION_PCT, MIN_MATCHES, TOP_K, MAX_PER_INSTRUMENT,
     SL_FLOOR_PCT, SL_CAP_PCT, STRUCTURAL_SL_PATTERNS,
     STRUCTURAL_SL_MULTIPLIER, STANDARD_SL_MULTIPLIER,
+    COST_DELIVERY_PCT,
     is_tradeable_instrument, is_tradeable_timeframe, is_tradeable_pattern,
     is_tradeable_tier,
 )
@@ -413,14 +414,14 @@ class MetaClassifier:
                 pred_dir = pred["predicted_direction"]
                 if pred_dir == "bullish":
                     if mae_5 < -sl_pct:
-                        net_ret = -sl_pct - SLIPPAGE_COMMISSION_PCT
+                        net_ret = -sl_pct - COST_DELIVERY_PCT
                     else:
-                        net_ret = actual_ret - SLIPPAGE_COMMISSION_PCT
+                        net_ret = actual_ret - COST_DELIVERY_PCT
                 elif pred_dir == "bearish":
                     if mfe_5 > sl_pct:
-                        net_ret = -sl_pct - SLIPPAGE_COMMISSION_PCT
+                        net_ret = -sl_pct - COST_DELIVERY_PCT
                     else:
-                        net_ret = -actual_ret - SLIPPAGE_COMMISSION_PCT
+                        net_ret = -actual_ret - COST_DELIVERY_PCT
                 else:
                     continue
 
@@ -502,7 +503,20 @@ class MetaClassifier:
             print(f"  [META] 5-fold CV AUC: {cv_scores.mean():.4f} +/- {cv_scores.std():.4f}")
             if cv_scores.mean() < 0.53:
                 print(f"  [META] WARNING: AUC < 0.53 — model is near random!")
-                print(f"  [META] Consider using simple rules instead of ML.")
+                print(f"  [META] FAIL-SAFE: Disabling meta-classifier; rule-based filter only.")
+
+        # B4 FAIL-SAFE: if CV AUC < 0.53, model is harmful (worse than random).
+        # Mark as disabled so should_trade() falls through to let stat predictor decide.
+        if cv_scores.mean() < 0.53:
+            self.is_trained = False   # disables gating in should_trade()
+            self.train_metrics = {
+                "disabled": True,
+                "reason": f"CV AUC {cv_scores.mean():.4f} < 0.53 threshold \u2014 model near random",
+                "cv_auc_mean": float(cv_scores.mean()),
+            }
+            if verbose:
+                print(f"  [META] Meta-classifier DISABLED for this session.")
+            return self.train_metrics
 
         # Train final model
         self.model.fit(X, y)
@@ -822,14 +836,14 @@ if __name__ == "__main__":
         pred_dir = pred["predicted_direction"]
         if pred_dir == "bullish":
             if mae_5 < -sl_pct:
-                net_ret = -sl_pct - SLIPPAGE_COMMISSION_PCT
+                net_ret = -sl_pct - COST_DELIVERY_PCT
             else:
-                net_ret = actual_ret - SLIPPAGE_COMMISSION_PCT
+                net_ret = actual_ret - COST_DELIVERY_PCT
         elif pred_dir == "bearish":
             if mfe_5 > sl_pct:
-                net_ret = -sl_pct - SLIPPAGE_COMMISSION_PCT
+                net_ret = -sl_pct - COST_DELIVERY_PCT
             else:
-                net_ret = -actual_ret - SLIPPAGE_COMMISSION_PCT
+                net_ret = -actual_ret - COST_DELIVERY_PCT
         else:
             continue
 

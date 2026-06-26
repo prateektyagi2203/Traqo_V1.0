@@ -293,31 +293,49 @@ def assess_position_health(trade: dict, check_date: date = None) -> dict:
     days_held = (check_date - entry_date).days
 
     # --- Day-0 guard: no price history yet — assessment would be pure noise ---
-    # Sector momentum, trajectory, and regime checks all need at least 1 day.
-    # Return HOLD immediately; let the SL and target do their job.
+    # C3 FIX: still check for a regime crash on the day of entry.
+    # If the market is already bearish on entry day for a BULLISH trade, flag EXIT.
     if days_held < 1:
         orig_conf = {"HIGH": 80, "MEDIUM": 60, "LOW": 40}.get(
             (trade.get("confidence") or "MEDIUM").upper(), 55
         )
+        trade_dir_d0 = (trade.get("direction") or "").upper()
+        current_regime_d0 = get_current_market_regime()
+        # Crash check: BULLISH trade in bearish regime on entry day
+        if trade_dir_d0 == "BULLISH" and current_regime_d0 == "bearish":
+            return {
+                "trade_id": trade_id, "ticker": ticker,
+                "direction": trade_dir_d0, "days_held": 0,
+                "horizon_label": trade.get("horizon_label", ""),
+                "entry_date": trade["entry_date"],
+                "original_confidence": orig_conf,
+                "confidence_decay_mult": 1.0, "confidence_decay_pct": 0.0,
+                "regime_alignment": False,
+                "entry_regime": "unknown", "current_regime": current_regime_d0,
+                "regime_shift_penalty": -30,
+                "sector": trade.get("sector", "unknown"),
+                "sector_momentum": 0.0, "sector_penalty": 0,
+                "direction_penalty": -10, "trajectory_adjustment": 0,
+                "trajectory_score": 50.0, "trajectory_label": "DAY-0-CRASH",
+                "adjusted_confidence": max(0, orig_conf - 40),
+                "action_required": True,
+                "action": "EXIT IMMEDIATELY",
+                "action_detail": "Entered today into bearish regime — regime crash on entry day.",
+            }
         return {
             "trade_id": trade_id, "ticker": ticker,
-            "direction": (trade.get("direction") or "").upper(),
-            "days_held": 0,
+            "direction": trade_dir_d0, "days_held": 0,
             "horizon_label": trade.get("horizon_label", ""),
             "entry_date": trade["entry_date"],
             "original_confidence": orig_conf,
-            "confidence_decay_mult": 1.0,
-            "confidence_decay_pct": 0.0,
+            "confidence_decay_mult": 1.0, "confidence_decay_pct": 0.0,
             "regime_alignment": True,
-            "entry_regime": "unknown", "current_regime": "unknown",
+            "entry_regime": "unknown", "current_regime": current_regime_d0,
             "regime_shift_penalty": 0,
             "sector": trade.get("sector", "unknown"),
-            "sector_momentum": 0.0,
-            "sector_penalty": 0,
-            "direction_penalty": 0,
-            "trajectory_adjustment": 0,
-            "trajectory_score": 50.0,
-            "trajectory_label": "DAY-0",
+            "sector_momentum": 0.0, "sector_penalty": 0,
+            "direction_penalty": 0, "trajectory_adjustment": 0,
+            "trajectory_score": 50.0, "trajectory_label": "DAY-0",
             "adjusted_confidence": float(orig_conf),
             "action_required": False,
             "action": "HOLD",
@@ -413,6 +431,12 @@ def assess_position_health(trade: dict, check_date: date = None) -> dict:
                 trajectory_label = t_health.get("label", "N/A")
         except Exception as e:
             log.debug(f"Trajectory health failed for {trade.get('ticker')}: {e}")
+    elif not HAVE_TRAJECTORY_HEALTH:
+        # C4 FIX: trajectory module unavailable — apply a small uncertainty penalty
+        # rather than silently returning 0 (which overstates confidence).
+        trajectory_adjustment = -5
+        trajectory_label = "UNAVAILABLE"
+        log.warning(f"Trajectory health module not available for {ticker} — applying -5 uncertainty penalty.")
 
     # --- SL-aware trajectory penalty reduction ---
     # The SL defines the acceptable loss boundary for this trade.

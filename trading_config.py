@@ -283,9 +283,31 @@ DISABLED_HORIZONS = frozenset()  # 25d fully removed from scope — not relevant
 # ============================================================
 # TRADING COST MODEL
 # ============================================================
-# Indian intraday: ~0.05% round-trip
-# Covers brokerage + STT + exchange txn + GST + stamp duty + SEBI turnover
-SLIPPAGE_COMMISSION_PCT = 0.05
+# Two-tier round-trip cost (all-in: brokerage + STT + exchange txn + GST + stamp + SEBI).
+# DELIVERY (overnight / multi-day hold): 0.25% round-trip
+# INTRADAY  (same-day open+close):       0.07% round-trip
+# Rule applied per closed trade: cost_pct = 0.07 if entry_date == exit_date else 0.25
+#
+# Legacy constant kept for backward-compat imports; DO NOT use in new code.
+SLIPPAGE_COMMISSION_PCT = 0.25   # kept for old imports — equals delivery cost
+
+COST_DELIVERY_PCT = 0.25   # overnight / multi-day hold (BTST, Swing 3/5/10d)
+COST_INTRADAY_PCT = 0.07   # same-day open+close (SHORT_1d)
+
+
+def get_trade_cost_pct(entry_date_str: str, exit_date_str: str) -> float:
+    """Return the correct round-trip cost % for a closed trade.
+
+    Args:
+        entry_date_str: ISO date string of entry (e.g. '2026-06-26')
+        exit_date_str:  ISO date string of exit
+
+    Returns:
+        0.07 if same-day (intraday), else 0.25 (delivery)
+    """
+    if entry_date_str and exit_date_str and entry_date_str == exit_date_str:
+        return COST_INTRADAY_PCT
+    return COST_DELIVERY_PCT
 
 
 # ============================================================
@@ -319,7 +341,7 @@ HORIZON_EDGE_THRESHOLDS = {
 KELLY_FRACTION = 0.5              # Use half-Kelly for safety
 MAX_POSITION_PCT = 3.0            # Max 3% of capital per trade (was 5% — too aggressive)
 MIN_POSITION_PCT = 0.5            # Min 0.5% of capital per trade
-DEFAULT_CAPITAL = 1_000_000       # Default ₹10L capital for sizing
+DEFAULT_CAPITAL = 100_000         # ₹1L notional paper capital
 
 
 # ============================================================
@@ -337,8 +359,8 @@ COOLDOWN_AFTER_KILL_MINUTES = 60  # Cooldown period after circuit breaker trips
 # ITEM 10: PAPER TRADING
 # ============================================================
 PAPER_TRADE_LOG = "paper_trades/trade_log.json"
-PAPER_TRADE_CAPITAL = 1_000_000   # ₹10L paper capital
-MAX_CONCURRENT_POSITIONS = 10     # Max simultaneous open positions
+PAPER_TRADE_CAPITAL = 100_000     # ₹1L paper capital
+MAX_CONCURRENT_POSITIONS = 8      # Max simultaneous open positions (sized for ₹1L)
 
 
 # ============================================================
@@ -605,7 +627,7 @@ SHORT_1D_RR_RATIO             = 2.0     # 2:1 R:R — TP = SL_dist * 2.0 below e
 SHORT_1D_CONFIDENCE_MIN       = 0.60    # 60% confidence threshold (higher than BTST longs)
 SHORT_1D_PROFIT_EXIT_PCT      = 1.5     # Lock in at +1.5% (backtest showed +0.5% caps wins)
 SHORT_1D_FORCE_CLOSE_TIME     = "15:15" # Force-close all shorts at 3:15 PM IST
-SHORT_1D_RED_ALERT_GATE       = True    # GATE 2: Only SHORT when global sentiment >= RED_ALERT
+SHORT_1D_RED_ALERT_GATE       = False   # GATE 2: disabled — SHORT fires on pattern signal regardless of sentiment
 SHORT_1D_MIN_BEARISH_SCORE    = BEARISH_SCORE_RED_ALERT  # Default: 70 (RED_ALERT)
 SHORT_1D_SHADOW_TRACKING      = True    # Track filtered shorts as shadow trades
 SHORT_1D_MAX_POSITIONS        = 3       # Max concurrent SHORT_1d positions

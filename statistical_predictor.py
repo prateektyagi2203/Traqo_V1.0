@@ -421,28 +421,28 @@ class StatisticalPredictor:
         paper_n = 0
         feedback_source = None
 
-        if triple_adj and triple_adj.get("total_trades", 0) >= 3:
+        if triple_adj and triple_adj.get("total_trades", 0) >= 5:  # B2: raised from 3
             paper_wr = triple_adj.get("decay_weighted_win_rate", triple_adj.get("win_rate", 50))
             paper_n = triple_adj["total_trades"]
             feedback_source = f"triple:{triple_key}"
-        elif horizon_adj and horizon_adj.get("total_trades", 0) >= 2:
+        elif horizon_adj and horizon_adj.get("total_trades", 0) >= 5:  # B2: raised from 2
             paper_wr = horizon_adj.get("decay_weighted_win_rate", horizon_adj.get("win_rate", 50))
             paper_n = horizon_adj["total_trades"]
             feedback_source = f"horizon:{horizon_key}"
-        elif sector_adj and sector_adj.get("total_trades", 0) >= 2:
+        elif sector_adj and sector_adj.get("total_trades", 0) >= 5:  # B2: raised from 2
             paper_wr = sector_adj.get("decay_weighted_win_rate", sector_adj.get("win_rate", 50))
             paper_n = sector_adj["total_trades"]
             feedback_source = f"sector:{sector_key}"
-        elif regime_adj and regime_adj.get("total_trades", 0) >= 3:
+        elif regime_adj and regime_adj.get("total_trades", 0) >= 5:  # B2: raised from 3
             paper_wr = regime_adj.get("decay_weighted_win_rate", regime_adj.get("win_rate", 50))
             paper_n = regime_adj["total_trades"]
             feedback_source = f"regime:{regime_key}"
-        elif adj and adj.get("total_trades", 0) >= 2:
+        elif adj and adj.get("total_trades", 0) >= 5:  # B2: raised from 2
             paper_wr = adj.get("decay_weighted_win_rate", adj.get("actual_win_rate", 50))
             paper_n = adj["total_trades"]
             feedback_source = f"pattern:{pattern}"
 
-        if paper_wr is not None and paper_n >= 2:
+        if paper_wr is not None and paper_n >= 5:  # B2: raised from 2
             raw_wr = result.get("win_rate", 50)
 
             # Weight: paper data gets up to 50% influence, scaling with sample size
@@ -715,6 +715,11 @@ class StatisticalPredictor:
             bullish_edge = bullish_pct - base_bull
             bearish_edge = bearish_pct - (self.base_rates.get("bearish", 0.5) * 100)
 
+            # B5 FIX: guard against base-rate direction flip.
+            # The edge comparison can flip a legitimately bullish signal to "bearish" when
+            # the DB has a strong base bias. Raw vote agreement takes priority.
+            raw_direction = "bullish" if bullish_pct > bearish_pct else "bearish"
+
             # Direction based on edge, not raw percentage
             if abs(bullish_edge) < 3 and abs(bearish_edge) < 3:
                 direction = "neutral"
@@ -722,6 +727,10 @@ class StatisticalPredictor:
                 direction = "bullish"
             else:
                 direction = "bearish"
+
+            # If edge comparison disagrees with raw majority vote, be conservative (neutral)
+            if direction != "neutral" and direction != raw_direction:
+                direction = "neutral"
 
             result["horizons"][f"+{n}_candles"] = {
                 "direction": direction,
@@ -833,6 +842,18 @@ class StatisticalPredictor:
             pf_factor * 0.25
         )
         conf_level = "HIGH" if confidence > 0.55 else "MEDIUM" if confidence > 0.35 else "LOW"
+
+        # B1 FIX: Wilson CI guard — demote HIGH to MEDIUM if the sample is too small
+        # to be statistically confident (ci_lower ≤ 50% or n < 30).
+        # Prevents 100%-WR-on-6-trades from masquerading as HIGH confidence.
+        if conf_level == "HIGH" and trade_returns:
+            n_wins = len([t for t in trade_returns if t > 0])
+            ci = self.calculate_confidence_interval(n_wins, len(trade_returns))
+            if not ci["is_significant"] or len(trade_returns) < 30:
+                conf_level = "MEDIUM"
+                result["ci_downgraded"] = True
+                result["ci_lower"] = round(ci["ci_lower"], 1)
+                result["ci_sample"] = len(trade_returns)
 
         result["confidence_score"] = round(confidence, 4)
         result["confidence_level"] = conf_level

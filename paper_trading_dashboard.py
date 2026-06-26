@@ -468,6 +468,7 @@ def q_stats_by_stock():
     c = get_db()
     rows = [dict(r) for r in c.execute("""
         SELECT ticker,
+               MAX(sector) as sector,
                COUNT(*) as total,
                SUM(CASE WHEN status IN ('WON','EXPIRED_WIN') THEN 1 ELSE 0 END) as wins,
                SUM(CASE WHEN status IN ('LOST','EXPIRED_LOSS') THEN 1 ELSE 0 END) as losses,
@@ -480,6 +481,76 @@ def q_stats_by_stock():
         t = r["wins"] + r["losses"]
         r["win_rate"] = round(r["wins"] / t * 100, 1) if t else 0
     c.close()
+    return rows
+
+
+def q_stats_by_sector():
+    c = get_db()
+    rows = [dict(r) for r in c.execute("""
+        SELECT sector,
+               COUNT(DISTINCT ticker) as stocks,
+               COUNT(*) as total,
+               SUM(CASE WHEN status IN ('WON','EXPIRED_WIN') THEN 1 ELSE 0 END) as wins,
+               SUM(CASE WHEN status IN ('LOST','EXPIRED_LOSS') THEN 1 ELSE 0 END) as losses,
+               AVG(CASE WHEN status IN ('WON','EXPIRED_WIN') THEN actual_return_pct END) as avg_win,
+               AVG(CASE WHEN status IN ('LOST','EXPIRED_LOSS') THEN actual_return_pct END) as avg_loss,
+               AVG(actual_return_pct) as avg_ret,
+               SUM(actual_return_pct) as total_ret,
+               SUM(CASE WHEN actual_return_pct > 0 THEN actual_return_pct ELSE 0 END) as gross_win,
+               SUM(CASE WHEN actual_return_pct < 0 THEN actual_return_pct ELSE 0 END) as gross_loss,
+               MAX(actual_return_pct) as best_trade,
+               MIN(actual_return_pct) as worst_trade
+        FROM trades
+        WHERE status NOT IN ('OPEN','CANCELLED')
+          AND sector IS NOT NULL AND sector != '' AND sector != 'unknown'
+        GROUP BY sector ORDER BY total DESC
+    """).fetchall()]
+    for r in rows:
+        t = r["wins"] + r["losses"]
+        r["win_rate"] = round(r["wins"] / t * 100, 1) if t else 0
+        gw = r["gross_win"] or 0
+        gl = abs(r["gross_loss"] or 0)
+        if t == 0:
+            r["profit_factor"] = None
+        elif gl == 0:
+            r["profit_factor"] = "∞"
+        else:
+            r["profit_factor"] = round(gw / gl, 2)
+    # Dominant pattern per sector (split comma-separated patterns, count individually)
+    pat_rows = [dict(r) for r in c.execute("""
+        SELECT sector, patterns, COUNT(*) as cnt
+        FROM trades
+        WHERE status NOT IN ('OPEN','CANCELLED')
+          AND sector IS NOT NULL AND sector != '' AND sector != 'unknown'
+          AND patterns IS NOT NULL AND patterns != ''
+        GROUP BY sector, patterns ORDER BY sector, cnt DESC
+    """).fetchall()]
+    sec_pat_counts = {}
+    for row in pat_rows:
+        sec = row["sector"]; cnt = row["cnt"]
+        for p in [x.strip() for x in (row["patterns"] or "").split(",") if x.strip()]:
+            sec_pat_counts.setdefault(sec, {})
+            sec_pat_counts[sec][p] = sec_pat_counts[sec].get(p, 0) + cnt
+    dom_pattern = {sec: max(counts, key=counts.get) for sec, counts in sec_pat_counts.items() if counts}
+    # Dominant horizon per sector
+    hz_rows = [dict(r) for r in c.execute("""
+        SELECT sector, horizon_label, COUNT(*) as cnt
+        FROM trades
+        WHERE status NOT IN ('OPEN','CANCELLED')
+          AND sector IS NOT NULL AND sector != '' AND sector != 'unknown'
+          AND horizon_label IS NOT NULL AND horizon_label != ''
+        GROUP BY sector, horizon_label ORDER BY sector, cnt DESC
+    """).fetchall()]
+    dom_horizon = {}
+    for row in hz_rows:
+        sec = row["sector"]
+        if sec not in dom_horizon:
+            dom_horizon[sec] = row["horizon_label"]
+    c.close()
+    for r in rows:
+        sec = r["sector"]
+        r["dom_pattern"] = dom_pattern.get(sec, "—")
+        r["dom_horizon"] = dom_horizon.get(sec, "—")
     return rows
 
 
@@ -1461,7 +1532,7 @@ def render_positions():
                   <div class="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold {dir_cls}">{dir_arrow}</div>
                   <div>
                     <p class="font-bold text-gray-800 text-base">{_e(_ticker(t["ticker"]))}</p>
-                    <p class="text-xs text-gray-400">{_e(t.get("sector") or "NSE")} · Entered {_date(t["entry_date"])}</p>
+                    <p class="text-xs text-gray-400">{_e((t.get("sector") or "NSE").upper())} · Entered {_date(t["entry_date"])}</p>
                   </div>
                 </div>
                 {badge(hz_label, "info")}
@@ -1975,6 +2046,7 @@ def render_performance():
     hz_stats = q_stats_by_horizon()
     pat_stats = q_stats_by_pattern()
     stock_stats = q_stats_by_stock()
+    sec_stats = q_stats_by_sector()
 
     kpis = f'''
     <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
@@ -1993,9 +2065,9 @@ def render_performance():
             hz_rows += f'''
             <tr class="hover:bg-blue-50/50 border-b border-gray-100">
               <td class="px-4 py-2 font-medium text-gray-800">{_e(h.get("horizon_label",""))}</td>
-              <td class="px-4 py-2 text-right text-gray-600">{h["total"]}</td>
-              <td class="px-4 py-2 text-right text-emerald-600">{h["wins"]}</td>
-              <td class="px-4 py-2 text-right text-red-600">{h["losses"]}</td>
+              <td class="px-4 py-2 text-right text-gray-600" data-val="{h["total"]}">{h["total"]}</td>
+              <td class="px-4 py-2 text-right text-emerald-600" data-val="{h["wins"]}">{h["wins"]}</td>
+              <td class="px-4 py-2 text-right text-red-600" data-val="{h["losses"]}">{h["losses"]}</td>
               <td class="px-4 py-2 text-right font-semibold text-gray-800" data-val="{h["win_rate"]}">{h["win_rate"]}%</td>
               <td class="px-4 py-2 text-right text-emerald-600" data-val="{round(h.get('avg_win') or 0, 4)}">{_pct(h.get("avg_win"))}</td>
               <td class="px-4 py-2 text-right text-red-600" data-val="{round(h.get('avg_loss') or 0, 4)}">{_pct(h.get("avg_loss"))}</td>
@@ -2011,12 +2083,12 @@ def render_performance():
           </div>
           <table id="hz-table" class="w-full text-sm"><thead><tr class="border-b border-gray-200">
             <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Horizon</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Trades</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Wins</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Losses</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Win Rate</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Avg Win</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Avg Loss</th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="1" onclick="hzSort(this)"><span>Trades</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="2" onclick="hzSort(this)"><span>Wins</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="3" onclick="hzSort(this)"><span>Losses</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="4" onclick="hzSort(this)"><span>Win Rate</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="5" onclick="hzSort(this)"><span>Avg Win</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="6" onclick="hzSort(this)"><span>Avg Loss</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
           </tr></thead><tbody>{hz_rows}</tbody></table>
         </div>
         <script>
@@ -2051,6 +2123,26 @@ def render_performance():
           document.body.removeChild(a);
           URL.revokeObjectURL(url);
         }};
+        (function(){{
+          var _hzCol = -1, _hzDir = 1;
+          window.hzSort = function(th) {{
+            var col = parseInt(th.getAttribute('data-col'));
+            if (_hzCol === col) {{ _hzDir *= -1; }} else {{ _hzCol = col; _hzDir = -1; }}
+            var icon = _hzDir === -1 ? '&#8595;' : '&#8593;';
+            document.querySelectorAll('#hz-table thead th').forEach(function(h) {{
+              var si = h.querySelector('.sort-icon');
+              if (si) si.innerHTML = h === th ? icon : '&#8645;';
+            }});
+            var tbody = document.querySelector('#hz-table tbody');
+            var rows = Array.from(tbody.querySelectorAll('tr'));
+            rows.sort(function(a, b) {{
+              var av = parseFloat(a.querySelectorAll('td')[col].getAttribute('data-val')) || 0;
+              var bv = parseFloat(b.querySelectorAll('td')[col].getAttribute('data-val')) || 0;
+              return (av - bv) * _hzDir;
+            }});
+            rows.forEach(function(r) {{ tbody.appendChild(r); }});
+          }};
+        }})();
         </script>'''
 
     # Pattern table
@@ -2062,8 +2154,8 @@ def render_performance():
             pat_rows += f'''
             <tr class="hover:bg-blue-50/50 border-b border-gray-100">
               <td class="px-4 py-2 text-gray-800 text-xs">{_e((p.get("patterns","") or "").replace(",", " · "))}</td>
-              <td class="px-4 py-2 text-right text-gray-600">{p["total"]}</td>
-              <td class="px-4 py-2 text-right text-gray-600">{p["wins"]} / {p["losses"]}</td>
+              <td class="px-4 py-2 text-right text-gray-600" data-val="{p["total"]}">{p["total"]}</td>
+              <td class="px-4 py-2 text-right text-gray-600" data-val="{p["wins"]}">{p["wins"]} / {p["losses"]}</td>
               <td class="px-4 py-2 text-right font-semibold text-gray-800" data-val="{p["win_rate"]}">{p["win_rate"]}%</td>
               <td class="px-4 py-2 text-right font-mono {ret_cls}" data-val="{round(p.get('avg_ret') or 0, 4)}">{_pct(p.get("avg_ret"))}</td>
             </tr>'''
@@ -2078,10 +2170,10 @@ def render_performance():
           </div>
           <table id="pat-table" class="w-full text-sm"><thead><tr class="border-b border-gray-200">
             <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Pattern</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Trades</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">W / L</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Win Rate</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Avg Return</th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="1" onclick="patSort(this)"><span>Trades</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="2" onclick="patSort(this)"><span>W / L</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="3" onclick="patSort(this)"><span>Win Rate</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="4" onclick="patSort(this)"><span>Avg Return</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
           </tr></thead><tbody>{pat_rows}</tbody></table>
         </div>
         <script>
@@ -2116,6 +2208,145 @@ def render_performance():
           document.body.removeChild(a);
           URL.revokeObjectURL(url);
         }};
+        (function(){{
+          var _patCol = -1, _patDir = 1;
+          window.patSort = function(th) {{
+            var col = parseInt(th.getAttribute('data-col'));
+            if (_patCol === col) {{ _patDir *= -1; }} else {{ _patCol = col; _patDir = -1; }}
+            var icon = _patDir === -1 ? '&#8595;' : '&#8593;';
+            document.querySelectorAll('#pat-table thead th').forEach(function(h) {{
+              var si = h.querySelector('.sort-icon');
+              if (si) si.innerHTML = h === th ? icon : '&#8645;';
+            }});
+            var tbody = document.querySelector('#pat-table tbody');
+            var rows = Array.from(tbody.querySelectorAll('tr'));
+            rows.sort(function(a, b) {{
+              var av = parseFloat(a.querySelectorAll('td')[col].getAttribute('data-val')) || 0;
+              var bv = parseFloat(b.querySelectorAll('td')[col].getAttribute('data-val')) || 0;
+              return (av - bv) * _patDir;
+            }});
+            rows.forEach(function(r) {{ tbody.appendChild(r); }});
+          }};
+        }})();
+        </script>'''
+
+    # Sector table
+    sec_html = ""
+    if sec_stats:
+        sec_rows = ""
+        for sc in sec_stats:
+            wr_cls = "text-emerald-600" if (sc.get("win_rate") or 0) >= 55 else "text-amber-600" if (sc.get("win_rate") or 0) >= 45 else "text-red-600"
+            avg_ret_cls = "text-emerald-600" if (sc.get("avg_ret") or 0) >= 0 else "text-red-600"
+            tot_ret_cls = "text-emerald-600" if (sc.get("total_ret") or 0) >= 0 else "text-red-600"
+            pf_val = sc.get("profit_factor")
+            pf_display = "∞" if pf_val == "∞" else (f"{pf_val:.2f}" if pf_val is not None else "—")
+            pf_data = "9999" if pf_val == "∞" else (str(round(pf_val, 4)) if pf_val is not None else "0")
+            sec_rows += f'''
+            <tr class="hover:bg-blue-50/50 border-b border-gray-100">
+              <td class="px-3 py-2 font-semibold text-gray-800 text-xs">{_e((sc.get("sector") or "").upper())}</td>
+              <td class="px-3 py-2 text-right text-gray-600" data-val="{sc["stocks"]}">{sc["stocks"]}</td>
+              <td class="px-3 py-2 text-right text-gray-600" data-val="{sc["total"]}">{sc["total"]}</td>
+              <td class="px-3 py-2 text-right text-gray-500">{sc["wins"]} / {sc["losses"]}</td>
+              <td class="px-3 py-2 text-right font-semibold {wr_cls}" data-val="{sc["win_rate"]}">{sc["win_rate"]}%</td>
+              <td class="px-3 py-2 text-right text-emerald-600" data-val="{round(sc.get('avg_win') or 0, 4)}">{_pct(sc.get("avg_win"))}</td>
+              <td class="px-3 py-2 text-right text-red-600" data-val="{round(sc.get('avg_loss') or 0, 4)}">{_pct(sc.get("avg_loss"))}</td>
+              <td class="px-3 py-2 text-right font-mono {avg_ret_cls}" data-val="{round(sc.get('avg_ret') or 0, 4)}">{_pct(sc.get("avg_ret"))}</td>
+              <td class="px-3 py-2 text-right font-mono font-semibold {tot_ret_cls}" data-val="{round(sc.get('total_ret') or 0, 4)}">{_pct(sc.get("total_ret"))}</td>
+              <td class="px-3 py-2 text-right text-gray-700" data-val="{pf_data}">{pf_display}</td>
+              <td class="px-3 py-2 text-right text-emerald-600" data-val="{round(sc.get('best_trade') or 0, 4)}">{_pct(sc.get("best_trade"))}</td>
+              <td class="px-3 py-2 text-right text-red-600" data-val="{round(sc.get('worst_trade') or 0, 4)}">{_pct(sc.get("worst_trade"))}</td>
+              <td class="px-3 py-2 text-xs text-gray-500">{_e(sc.get("dom_pattern") or "—")}</td>
+              <td class="px-3 py-2 text-xs text-gray-500">{_e(sc.get("dom_horizon") or "—")}</td>
+            </tr>'''
+        sec_html = f'''
+        <div class="glass rounded-xl p-6 mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-gray-800">Performance by Sector</h3>
+            <button onclick="secDownload()" title="Download as Excel/CSV" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg transition-colors shadow-sm">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              Download Excel
+            </button>
+          </div>
+          <div class="overflow-x-auto">
+          <table id="sec-table" class="w-full text-sm min-w-max"><thead><tr class="border-b border-gray-200">
+            <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Sector</th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="1" onclick="secSort(this)"><span>Stocks</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="2" onclick="secSort(this)"><span>Trades</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase">W / L</th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="4" onclick="secSort(this)"><span>Win Rate</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="5" onclick="secSort(this)"><span>Avg Win</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="6" onclick="secSort(this)"><span>Avg Loss</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="7" onclick="secSort(this)"><span>Avg Ret</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="8" onclick="secSort(this)"><span>Total Ret</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="9" onclick="secSort(this)"><span>Prof. Factor</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="10" onclick="secSort(this)"><span>Best</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="11" onclick="secSort(this)"><span>Worst</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span></th>
+            <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Dom. Pattern</th>
+            <th class="px-3 py-2 text-left text-xs text-gray-500 uppercase">Dom. Horizon</th>
+          </tr></thead><tbody>{sec_rows}</tbody></table>
+          </div>
+        </div>
+        <script>
+        window.secDownload = function() {{
+          var headers = ['Sector','Stocks','Trades','W','L','Win Rate %','Avg Win %','Avg Loss %','Avg Return %','Total Return %','Profit Factor','Best Trade %','Worst Trade %','Dom. Pattern','Dom. Horizon'];
+          var rows = [headers];
+          document.querySelectorAll('#sec-table tbody tr').forEach(function(tr) {{
+            var cells = tr.querySelectorAll('td');
+            var wl = cells[3].textContent.trim().split(' / ');
+            rows.push([
+              cells[0].textContent.trim(),
+              cells[1].getAttribute('data-val') || '',
+              cells[2].getAttribute('data-val') || '',
+              wl[0] || '',
+              wl[1] || '',
+              cells[4].getAttribute('data-val') || '',
+              cells[5].getAttribute('data-val') || '',
+              cells[6].getAttribute('data-val') || '',
+              cells[7].getAttribute('data-val') || '',
+              cells[8].getAttribute('data-val') || '',
+              cells[9].textContent.trim(),
+              cells[10].getAttribute('data-val') || '',
+              cells[11].getAttribute('data-val') || '',
+              cells[12].textContent.trim(),
+              cells[13].textContent.trim()
+            ]);
+          }});
+          var csv = rows.map(function(r) {{
+            return r.map(function(v) {{
+              var s = String(v);
+              return (s.indexOf(',')>=0||s.indexOf('"')>=0||s.indexOf('\\n')>=0)
+                ? '"'+s.replace(/"/g,'""')+'"' : s;
+            }}).join(',');
+          }}).join('\\r\\n');
+          var blob = new Blob(['\\uFEFF'+csv], {{type:'text/csv;charset=utf-8;'}});
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'sector_performance_'+new Date().toISOString().slice(0,10)+'.csv';
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }};
+        (function(){{
+          var _secCol = -1, _secDir = 1;
+          window.secSort = function(th) {{
+            var col = parseInt(th.getAttribute('data-col'));
+            if (_secCol === col) {{ _secDir *= -1; }} else {{ _secCol = col; _secDir = -1; }}
+            var icon = _secDir === -1 ? '&#8595;' : '&#8593;';
+            document.querySelectorAll('#sec-table thead th').forEach(function(h) {{
+              var si = h.querySelector('.sort-icon');
+              if (si) si.innerHTML = h === th ? icon : '&#8645;';
+            }});
+            var tbody = document.querySelector('#sec-table tbody');
+            var rows = Array.from(tbody.querySelectorAll('tr'));
+            rows.sort(function(a, b) {{
+              var av = parseFloat(a.querySelectorAll('td')[col].getAttribute('data-val')) || 0;
+              var bv = parseFloat(b.querySelectorAll('td')[col].getAttribute('data-val')) || 0;
+              return (av - bv) * _secDir;
+            }});
+            rows.forEach(function(r) {{ tbody.appendChild(r); }});
+          }};
+        }})();
         </script>'''
 
     # Stock table
@@ -2130,6 +2361,7 @@ def render_performance():
             stk_rows += f'''
             <tr class="hover:bg-blue-50/50 border-b border-gray-100">
               <td class="px-4 py-2 font-semibold text-gray-800">{_e(_ticker(st["ticker"]))}</td>
+              <td class="px-4 py-2 text-xs text-gray-500 uppercase">{_e((st.get("sector") or "—").upper())}</td>
               <td class="px-4 py-2 text-right text-gray-600" data-val="{st["total"]}">{st["total"]}</td>
               <td class="px-4 py-2 text-right text-gray-600">{st["wins"]} / {st["losses"]}</td>
               <td class="px-4 py-2 text-right font-semibold text-gray-800" data-val="{st["win_rate"]}">{st["win_rate"]}%</td>
@@ -2151,17 +2383,18 @@ def render_performance():
           <table id="stk-table" class="w-full text-sm">
             <thead><tr class="border-b border-gray-200">
               <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Stock</th>
-              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="1" onclick="stkSort(this)">
+              <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Sector</th>
+              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="2" onclick="stkSort(this)">
                 <span>Trades</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span>
               </th>
               <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">W / L</th>
-              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="3" onclick="stkSort(this)">
+              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="4" onclick="stkSort(this)">
                 <span>Win Rate</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span>
               </th>
-              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="4" onclick="stkSort(this)">
+              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="5" onclick="stkSort(this)">
                 <span>Avg Return</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span>
               </th>
-              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="5" onclick="stkSort(this)">
+              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="6" onclick="stkSort(this)">
                 <span>Total Return</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span>
               </th>
             </tr></thead>
@@ -2172,19 +2405,20 @@ def render_performance():
         (function(){{
           var _stkCol = -1, _stkDir = 1;
           window.stkDownload = function() {{
-            var headers = ['Stock','Trades','W','L','Win Rate %','Avg Return %','Total Return %'];
+            var headers = ['Stock','Sector','Trades','W','L','Win Rate %','Avg Return %','Total Return %'];
             var rows = [headers];
             document.querySelectorAll('#stk-table tbody tr').forEach(function(tr) {{
               var cells = tr.querySelectorAll('td');
-              var wl = cells[2].textContent.trim().split(' / ');
+              var wl = cells[3].textContent.trim().split(' / ');
               rows.push([
                 cells[0].textContent.trim(),
                 cells[1].textContent.trim(),
+                cells[2].textContent.trim(),
                 wl[0] || '',
                 wl[1] || '',
-                cells[3].getAttribute('data-val') || '',
                 cells[4].getAttribute('data-val') || '',
-                cells[5].getAttribute('data-val') || ''
+                cells[5].getAttribute('data-val') || '',
+                cells[6].getAttribute('data-val') || ''
               ]);
             }});
             var csv = rows.map(function(r) {{
@@ -2347,6 +2581,7 @@ def render_performance():
     {analytics_html}
     {hz_html}
     {pat_html}
+    {sec_html}
     {stk_html}
     {empty}'''
     return page_shell("Performance", "performance", body)
@@ -3532,6 +3767,7 @@ def render_engine(action_result=None):
             # Win rate ranges
             win_ranges = [
                 ("All", None, None),
+                ("\u2265 55%", 55, None),
                 ("40-50%", 40, 50),
                 ("50-60%", 50, 60),
                 ("60-70%", 60, 70),
@@ -3613,7 +3849,7 @@ def render_engine(action_result=None):
             sector_opts_html = "".join(f'<option value="{s}">{s}</option>' for s in sectors)
             horizon_opts_html = "".join(f'<option value="{h}">{h}</option>' for h in horizons)
             pattern_opts_html = "".join(f'<option value="{p}">{p}</option>' for p in patterns)
-            win_opts_html = "".join(f'<option value="{r[1]}|{r[2]}">{r[0]}</option>' for r in win_ranges)
+            win_opts_html = "".join(f'<option value="{r[1]}|{r[2]}" {"selected" if r[1] == 55 and r[2] is None else ""}>{r[0]}</option>' for r in win_ranges)
             
             filters_html = f'''
               <div class="grid grid-cols-5 gap-3 mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
@@ -3808,7 +4044,8 @@ def render_engine(action_result=None):
           updateSelectAll();
         }
         
-        // Add event listeners to filters
+        // Apply default Win%>=55 filter on load, then wire up change listeners
+        applyFilters();
         ['filter-conf', 'filter-wr', 'filter-sector', 'filter-horizon', 'filter-pattern'].forEach(id => {
           const elem = document.getElementById(id);
           if (elem) {
