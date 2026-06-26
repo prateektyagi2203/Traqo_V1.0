@@ -563,6 +563,28 @@ EARLY_EXIT_POLL_MINUTES = 5            # Poll every 5 min during market hours
 EXIT_FULL_POSITION = True              # Exit 100% (not partial trim)
 EXECUTE_RETROACTIVE_EXITS = True       # Execute pending exits on startup
 
+# ============================================================
+# ITEM 9e: MINUTE-LEVEL REPLAY ENGINE (OFFLINE RECOVERY)
+# ============================================================
+# When laptop is closed for up to 5 trading days, replays all intraday
+# exit/trim logic against 1-minute OHLC data on next startup.
+# yfinance 1m data limit: last 5 trading days (~7 calendar days).
+
+NIFTY_CRASH_TRIM_THRESHOLD  = -1.5   # Nifty% from 9:15 day open → log 30% trim
+NIFTY_CRASH_EXIT_THRESHOLD  = -2.5   # Nifty% from 9:15 day open → log 100% exit
+MINUTE_REPLAY_MAX_DAYS_BACK = 5      # Max trading days to replay (yfinance 1m limit)
+MINUTE_REPLAY_ENABLED       = True   # Master switch — set False to disable entirely
+
+# ============================================================
+# ITEM 9f: INDIA VIX
+# ============================================================
+INDIA_VIX_HIGH_THRESHOLD    = 16     # India VIX > 16 → growing fear
+INDIA_VIX_PANIC_THRESHOLD   = 25     # India VIX > 25 → panic territory
+
+# ============================================================
+# ITEM 9g: NSE CIRCUIT BREAKER
+# ============================================================
+NSE_CIRCUIT_BREAKER_DROP    = -10.0  # Nifty intraday drop % that signals L1 circuit
 
 # ============================================================
 # ITEM 9d: SHORT_1d — 1-DAY INTRADAY SHORT SELLING

@@ -24,18 +24,22 @@ log = logging.getLogger("global_sentiment")
 class GlobalSentimentMonitor:
     def __init__(self):
         self.tickers = {
-            'ES':  'ES=F',    # S&P 500 Futures
-            'VIX': '^VIX',    # VIX Index
-            'DXY': '^DXY',    # Dollar Index
-            'WTI': 'CL=F',    # WTI Oil
-            'NIK': '^N225',   # Nikkei
-            'HSI': '^HSI',    # Hang Seng
-            'ASX': '^AXJO',   # ASX 200
+            'ES':   'ES=F',      # S&P 500 Futures
+            'VIX':  '^VIX',      # CBOE VIX
+            'DXY':  'DX-Y.NYB',  # Dollar Index (^DXY not in yfinance free tier)
+            'WTI':  'CL=F',      # WTI Oil
+            'NIK':  '^N225',     # Nikkei
+            'HSI':  '^HSI',      # Hang Seng
+            'ASX':  '^AXJO',     # ASX 200
+            'NSE':  '^NSEI',     # Nifty 50 (domestic shock)
+            'IVIX': '^INDIAVIX', # India VIX (local panic gauge)
         }
 
+        # Weights must sum to 1.0.  IVIX gets 0.10; others trimmed proportionally.
         self.weights = {
-            'ES': 0.30, 'VIX': 0.25, 'DXY': 0.15,
-            'WTI': 0.10, 'NIK': 0.10, 'HSI': 0.05, 'ASX': 0.05
+            'ES':   0.20, 'VIX':  0.16, 'DXY': 0.09,
+            'WTI':  0.07, 'NIK':  0.09, 'HSI': 0.04, 'ASX': 0.04,
+            'NSE':  0.21, 'IVIX': 0.10,
         }
 
         # Bearish signal thresholds
@@ -45,6 +49,8 @@ class GlobalSentimentMonitor:
             'DXY_up':    0.8,    # % up
             'WTI_down':  -2.5,   # % down
             'ASIA_down': -1.5,   # % down
+            'NSE_down':  -1.0,   # % down
+            'IVIX_high': 16,     # India VIX > 16 = growing fear
         }
 
     # ------------------------------------------------------------------
@@ -57,7 +63,7 @@ class GlobalSentimentMonitor:
 
         for ticker_key, ticker_yf in self.tickers.items():
             try:
-                data = yf.download(ticker_yf, period='2d', progress=False)
+                data = yf.download(ticker_yf, period='2d', progress=False, multi_level_index=False)
                 if data is not None and len(data) >= 2:
                     if ticker_key == 'ES':
                         components['ES'] = self._score_es(data)
@@ -67,6 +73,10 @@ class GlobalSentimentMonitor:
                         components['DXY'] = self._score_dxy(data)
                     elif ticker_key == 'WTI':
                         components['WTI'] = self._score_wti(data)
+                    elif ticker_key == 'NSE':
+                        components['NSE'] = self._score_nse(data)
+                    elif ticker_key == 'IVIX':
+                        components['IVIX'] = self._score_ivix(data)
                     else:
                         components[ticker_key] = self._score_asian(data)
             except Exception as e:
@@ -87,10 +97,17 @@ class GlobalSentimentMonitor:
         if weight_sum > 0:
             composite_score = composite_score / weight_sum
 
-        return round(composite_score), {
+        final = round(composite_score)
+
+        # Override: NSE circuit breaker → force maximum score
+        if self._check_nse_circuit_breaker():
+            log.warning("[CIRCUIT BREAKER] Nifty intraday drop >= 10%% detected — forcing score to 100")
+            final = 100
+
+        return final, {
             'components': components,
             'timestamp': datetime.now().isoformat(),
-            'final_score': round(composite_score)
+            'final_score': final
         }
 
     # ------------------------------------------------------------------
@@ -157,6 +174,49 @@ class GlobalSentimentMonitor:
             log.debug(f"Asian score error: {e}")
             return 0
 
+    def _score_nse(self, data: pd.DataFrame) -> int:
+        try:
+            pct = self._pct_change_last(data)
+            if pct < self.thresholds['NSE_down']:
+                # Heavy penalty when local market sells off hard.
+                return min(100, int(abs(pct) * 25))
+            return max(0, 15 - int(pct * 6))
+        except Exception as e:
+            log.debug(f"NSE score error: {e}")
+            return 0
+
+    def _score_ivix(self, data: pd.DataFrame) -> int:
+        """Score India VIX (^INDIAVIX).  Panic >25, concern >16."""
+        try:
+            v = float(self._get_close(data).iloc[-1])
+            if v > 28:
+                return 100                               # panic
+            elif v > 20:
+                return min(100, int((v - 20) * 10) + 60) # 60-100
+            elif v > self.thresholds['IVIX_high']:
+                return int((v - self.thresholds['IVIX_high']) * 5)  # 0-20
+            else:
+                return max(0, int(self.thresholds['IVIX_high'] - v))
+        except Exception as e:
+            log.debug(f"IVIX score error: {e}")
+            return 0
+
+    def _check_nse_circuit_breaker(self) -> bool:
+        """Return True if Nifty has dropped >= 10%% intraday (L1 circuit breaker)."""
+        try:
+            from trading_config import NSE_CIRCUIT_BREAKER_DROP
+            df = yf.download('^NSEI', period='1d', interval='5m', progress=False, multi_level_index=False)
+            if df is None or len(df) < 2:
+                return False
+            first_price = float(df['Close'].iloc[0])
+            last_price  = float(df['Close'].iloc[-1])
+            if first_price <= 0:
+                return False
+            drop = (last_price - first_price) / first_price * 100
+            return drop <= NSE_CIRCUIT_BREAKER_DROP
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------
     # PUBLIC: minute-level price lookup (used for decision price)
     # ------------------------------------------------------------------
@@ -174,7 +234,7 @@ class GlobalSentimentMonitor:
             start = decision_timestamp - timedelta(minutes=5)
             end   = decision_timestamp + timedelta(minutes=5)
 
-            data = yf.download(yf_ticker, start=start, end=end, interval='1m', progress=False)
+            data = yf.download(yf_ticker, start=start, end=end, interval='1m', progress=False, multi_level_index=False)
 
             if data is None or len(data) == 0:
                 log.warning(f"No 1m data for {yf_ticker} around {decision_timestamp}")
@@ -187,10 +247,7 @@ class GlobalSentimentMonitor:
                 ts = pd.Timestamp(decision_timestamp)
 
             pos = (idx - ts).abs().argmin()
-            high_col = data['High']
-            if isinstance(high_col, pd.DataFrame):
-                high_col = high_col.iloc[:, 0]
-            return float(high_col.iloc[pos])
+            return float(data['High'].iloc[pos])
 
         except Exception as e:
             log.warning(f"get_minute_high failed for {ticker}: {e}")

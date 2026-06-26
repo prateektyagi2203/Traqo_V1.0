@@ -32,7 +32,10 @@ from trading_config import (
     BEARISH_SCORE_RED_ALERT,
     BEARISH_SCORE_YELLOW_ALERT,
     BEARISH_SCORE_ENTRY_DELTA_TRIM,
+    BEARISH_SCORE_NSE_GAP_THRESHOLD,
     TRIM_BTST_PERCENTAGE,
+    TRIM_SWING_PERCENTAGE,
+    TIGHTEN_SL_YELLOW_ALERT,
     SHORT_1D_ENABLED,
     SHORT_1D_FORCE_CLOSE_TIME,
     EXECUTE_RETROACTIVE_SHORT_CLOSE,
@@ -180,11 +183,9 @@ def _get_daily_data(ticker: str, lookback_days: int = 10) -> Optional[pd.DataFra
         start = end - timedelta(days=lookback_days + 15)   # extra buffer for weekends
         df = yf.download(ticker, start=start.strftime("%Y-%m-%d"),
                          end=(end + timedelta(days=1)).strftime("%Y-%m-%d"),
-                         progress=False)
+                         progress=False, multi_level_index=False)
         if df is None or df.empty:
             return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0] for c in df.columns]
         df = df.dropna()
         _cache[cache_key] = df
         return df
@@ -291,6 +292,38 @@ def assess_position_health(trade: dict, check_date: date = None) -> dict:
     entry_date = date.fromisoformat(trade["entry_date"])
     days_held = (check_date - entry_date).days
 
+    # --- Day-0 guard: no price history yet — assessment would be pure noise ---
+    # Sector momentum, trajectory, and regime checks all need at least 1 day.
+    # Return HOLD immediately; let the SL and target do their job.
+    if days_held < 1:
+        orig_conf = {"HIGH": 80, "MEDIUM": 60, "LOW": 40}.get(
+            (trade.get("confidence") or "MEDIUM").upper(), 55
+        )
+        return {
+            "trade_id": trade_id, "ticker": ticker,
+            "direction": (trade.get("direction") or "").upper(),
+            "days_held": 0,
+            "horizon_label": trade.get("horizon_label", ""),
+            "entry_date": trade["entry_date"],
+            "original_confidence": orig_conf,
+            "confidence_decay_mult": 1.0,
+            "confidence_decay_pct": 0.0,
+            "regime_alignment": True,
+            "entry_regime": "unknown", "current_regime": "unknown",
+            "regime_shift_penalty": 0,
+            "sector": trade.get("sector", "unknown"),
+            "sector_momentum": 0.0,
+            "sector_penalty": 0,
+            "direction_penalty": 0,
+            "trajectory_adjustment": 0,
+            "trajectory_score": 50.0,
+            "trajectory_label": "DAY-0",
+            "adjusted_confidence": float(orig_conf),
+            "action_required": False,
+            "action": "HOLD",
+            "action_detail": "Entered today — no trajectory data yet. Hold with SL/target.",
+        }
+
     # --- Original confidence (numeric 0-100) ---
     conf_str = (trade.get("confidence") or "MEDIUM").upper()
     original_confidence = {"HIGH": 80, "MEDIUM": 60, "LOW": 40}.get(conf_str, 55)
@@ -300,12 +333,35 @@ def assess_position_health(trade: dict, check_date: date = None) -> dict:
     if days_held > 10:
         decay_mult = DECAY_FLOOR
 
-    # --- Regime comparison ---
-    entry_regime = _classify_entry_regime(trade.get("indicators_json", "{}"))
+    # --- Regime comparison (direction-aware) ---
+    entry_regime   = _classify_entry_regime(trade.get("indicators_json", "{}"))
     current_regime = get_current_market_regime()
+    trade_direction = (trade.get("direction") or "").upper()
 
     regime_pair = (entry_regime, current_regime)
-    regime_shift_penalty = REGIME_SHIFT_PENALTIES.get(regime_pair, 0)
+    raw_shift_penalty = REGIME_SHIFT_PENALTIES.get(regime_pair, 0)
+
+    # Direction-aware adjustment:
+    #   BULLISH trade + bearish→bullish = tailwind (contrarian entry paid off) → BONUS
+    #   BULLISH trade + bullish→bearish = headwind (trend turned against you)  → PENALTY
+    #   BEARISH trade + bullish→bearish = tailwind                             → BONUS
+    #   BEARISH trade + bearish→bullish = headwind                             → PENALTY
+    if trade_direction == "BULLISH":
+        if entry_regime == "bearish" and current_regime == "bullish":
+            regime_shift_penalty = +15   # trend now in your favour — no penalty
+        elif entry_regime == "bullish" and current_regime == "bearish":
+            regime_shift_penalty = -30   # trend turned against you
+        else:
+            regime_shift_penalty = raw_shift_penalty
+    elif trade_direction == "BEARISH":
+        if entry_regime == "bullish" and current_regime == "bearish":
+            regime_shift_penalty = +15   # trend now in your favour
+        elif entry_regime == "bearish" and current_regime == "bullish":
+            regime_shift_penalty = -30   # trend turned against you
+        else:
+            regime_shift_penalty = raw_shift_penalty
+    else:
+        regime_shift_penalty = raw_shift_penalty
 
     # --- Sector health ---
     instrument = trade.get("instrument") or ""
@@ -318,38 +374,63 @@ def assess_position_health(trade: dict, check_date: date = None) -> dict:
             sector_penalty = penalty
             break
 
-    # --- Direction mismatch bonus / penalty ---
-    direction = (trade.get("direction") or "").upper()
+    # --- Direction vs current regime (mismatch bonus / penalty) ---
+    # Only penalise if direction contradicts the CURRENT regime AND there was no
+    # favourable bearish→bullish (or bullish→bearish) shift already rewarded above.
+    direction = trade_direction   # already computed in regime block above
     direction_penalty = 0
     if direction == "BULLISH" and current_regime == "bearish":
         direction_penalty = -10
     elif direction == "BEARISH" and current_regime == "bullish":
         direction_penalty = -10
 
+    # --- Current price (shared by trajectory check and SL-aware gate) ---
+    current_price = None
+    try:
+        _price_df = _get_daily_data(ticker, lookback_days=5)
+        if _price_df is not None and not _price_df.empty:
+            current_price = float(_price_df["Close"].iloc[-1])
+    except Exception:
+        pass
+
     # --- Trajectory health (RAG-informed mid-trade intelligence) ---
     trajectory_adjustment = 0
     trajectory_score = 50.0
     trajectory_label = "N/A"
-    if HAVE_TRAJECTORY_HEALTH and days_held >= 1:
+    if HAVE_TRAJECTORY_HEALTH and current_price is not None:
         try:
-            ticker = trade.get("ticker", "UNKNOWN")
-            df = _get_daily_data(ticker, lookback_days=5)
-            if df is not None and not df.empty:
-                current_price = float(df["Close"].iloc[-1])
-                profiler = _get_trajectory_profiler()
-                if profiler is not None:
-                    traj = assess_trade_trajectory(
-                        trade=trade,
-                        current_price=current_price,
-                        check_date=check_date,
-                        profiler=profiler,
-                    )
-                    trajectory_adjustment = traj.get("confidence_adjustment", 0)
-                    t_health = traj.get("trajectory_health", {})
-                    trajectory_score = t_health.get("score", 50.0)
-                    trajectory_label = t_health.get("label", "N/A")
+            profiler = _get_trajectory_profiler()
+            if profiler is not None:
+                traj = assess_trade_trajectory(
+                    trade=trade,
+                    current_price=current_price,
+                    check_date=check_date,
+                    profiler=profiler,
+                )
+                trajectory_adjustment = traj.get("confidence_adjustment", 0)
+                t_health = traj.get("trajectory_health", {})
+                trajectory_score = t_health.get("score", 50.0)
+                trajectory_label = t_health.get("label", "N/A")
         except Exception as e:
             log.debug(f"Trajectory health failed for {trade.get('ticker')}: {e}")
+
+    # --- SL-aware trajectory penalty reduction ---
+    # The SL defines the acceptable loss boundary for this trade.
+    # If price is still above SL, the position is within designed risk bounds —
+    # halve the trajectory penalty. It's underperforming, but not catastrophic.
+    if current_price is not None and trajectory_adjustment < 0:
+        try:
+            sl_val  = float(trade.get("sl_price") or 0)
+            dir_val = (trade.get("direction") or "BULLISH").upper()
+            above_sl = (
+                (dir_val == "BULLISH" and sl_val > 0 and current_price > sl_val) or
+                (dir_val == "BEARISH" and sl_val > 0 and current_price < sl_val)
+            )
+            if above_sl:
+                trajectory_adjustment = int(trajectory_adjustment * 0.5)
+                trajectory_label = trajectory_label + "(SL-safe)"
+        except Exception:
+            pass
 
     # --- FINAL ADJUSTED CONFIDENCE ---
     adjusted = (
@@ -645,6 +726,11 @@ def ensure_entry_regime_column(conn: sqlite3.Connection):
         conn.commit()
         log.info("Added entry_confidence column to trades table")
 
+    if "entry_bearish_score" not in columns:
+        conn.execute("ALTER TABLE trades ADD COLUMN entry_bearish_score REAL DEFAULT NULL")
+        conn.commit()
+        log.info("Added entry_bearish_score column to trades table")
+
 
 # ============================================================
 # GLOBAL BEARISH SCORE — INTRADAY TRIM DECISIONS
@@ -729,15 +815,12 @@ def check_intraday_bearish_trim(
     entry_bearish_scores: Dict[int, float] = None,
 ) -> List[dict]:
     """
-    Check all BTST_1d open positions against the current live bearish score.
+    Check open positions against the current live bearish score.
 
     Rules:
       - Only runs during NSE market hours (9:15 AM – 3:25 PM IST)
-      - Only processes horizon == 'BTST_1d'
-      - Swing_3d / Swing_5d / Swing_10d are intentionally SKIPPED
-      - Trim triggered if:
-          current_score >= BEARISH_SCORE_RED_ALERT   (70)  OR
-          current_score – entry_score >= BEARISH_SCORE_ENTRY_DELTA_TRIM (25)
+      - BTST_1d: trim 30% on RED_ALERT OR score-delta >= 25
+      - Swing_3d/5d/10d: trim 50% on RED_ALERT only (not score-delta)
       - Decision price stored = HIGH of the current 1-minute candle (conservative)
       - Decision is logged to bearish_trim_decisions; execution happens on startup
 
@@ -770,8 +853,11 @@ def check_intraday_bearish_trim(
         horizon  = trade.get("horizon_label", "")
         ticker   = trade.get("ticker", "UNKNOWN")
 
-        # Only BTST_1d — skip all swing horizons
-        if "BTST" not in horizon.upper():
+        is_btst  = "BTST" in horizon.upper()
+        is_swing = any(h in horizon.upper() for h in ("SWING", "_3D", "_5D", "_10D"))
+
+        # Skip unknown horizons
+        if not is_btst and not is_swing:
             continue
 
         # Skip if already processed today
@@ -787,7 +873,8 @@ def check_intraday_bearish_trim(
             triggered_reason = (
                 f"RED alert: score={current_score} >= {BEARISH_SCORE_RED_ALERT}"
             )
-        elif score_delta >= BEARISH_SCORE_ENTRY_DELTA_TRIM:
+        elif is_btst and score_delta >= BEARISH_SCORE_ENTRY_DELTA_TRIM:
+            # Score-delta only fires for BTST, not Swing
             triggered_reason = (
                 f"Score delta +{score_delta:.0f} "
                 f"(entry={entry_score}, current={current_score}, "
@@ -797,13 +884,15 @@ def check_intraday_bearish_trim(
         if triggered_reason is None:
             continue
 
-        # Fetch HIGH of current minute candle (conservative decision price)
+        # Trim percentage: BTST=30%, Swing=50%
+        trim_pct_to_log = TRIM_BTST_PERCENTAGE if is_btst else TRIM_SWING_PERCENTAGE
         decision_price = _gsm.get_minute_high(ticker, now)
 
         if decision_price is None:
-            # Fallback: last daily close
+            # Fallback: last daily close (ticker already contains .NS from DB)
             try:
-                df = _get_daily_data(f"{ticker}.NS", lookback_days=2)
+                yf_sym = ticker if (".NS" in ticker or ".BO" in ticker or ticker.startswith("^")) else f"{ticker}.NS"
+                df = _get_daily_data(yf_sym, lookback_days=2)
                 if df is not None and len(df) > 0:
                     decision_price = float(df["Close"].iloc[-1])
             except Exception:
@@ -823,26 +912,29 @@ def check_intraday_bearish_trim(
                 bearish_score=current_score,
                 entry_bearish_score=entry_score,
                 trim_reason=triggered_reason,
-                trim_percentage=30,
+                trim_percentage=trim_pct_to_log,
             )
 
             _trim_logged_today.add(trade_id)
 
             log.warning(
-                f"[INTRADAY TRIM] TRIGGERED: {ticker} (BTST) — "
+                f"[INTRADAY TRIM] TRIGGERED: {ticker} ({'BTST' if is_btst else 'SWING'}) — "
                 f"score={current_score}, delta={score_delta:.0f}, "
-                f"price={decision_price:.2f}, decision_id={decision_id}"
+                f"trim={trim_pct_to_log}%, price={decision_price:.2f}, "
+                f"decision_id={decision_id}"
             )
 
             triggered.append({
-                "trade_id":      trade_id,
-                "ticker":        ticker,
-                "decision_id":   decision_id,
-                "decision_price":decision_price,
-                "current_score": current_score,
-                "entry_score":   entry_score,
-                "score_delta":   score_delta,
-                "reason":        triggered_reason,
+                "trade_id":       trade_id,
+                "ticker":         ticker,
+                "horizon":        horizon,
+                "decision_id":    decision_id,
+                "decision_price": decision_price,
+                "current_score":  current_score,
+                "entry_score":    entry_score,
+                "score_delta":    score_delta,
+                "trim_pct":       trim_pct_to_log,
+                "reason":         triggered_reason,
             })
 
         except Exception as e:
@@ -850,7 +942,7 @@ def check_intraday_bearish_trim(
 
     if triggered:
         log.warning(
-            f"[INTRADAY TRIM] {len(triggered)} BTST trim decision(s) logged. "
+            f"[INTRADAY TRIM] {len(triggered)} trim decision(s) logged. "
             f"Will execute retroactively on next startup."
         )
 
@@ -861,6 +953,111 @@ def reset_intraday_trim_cache():
     """Clear per-session duplicate-prevention cache. Call at start of each trading day."""
     global _trim_logged_today
     _trim_logged_today = set()
+
+
+# ============================================================
+# NSE PRE-OPEN GAP CHECK (9:15–9:25 gate)
+# ============================================================
+
+_preopen_gap_logged_today: Optional[str] = None  # date string, avoid running twice per day
+
+
+def check_nse_preopen_gap(open_trades: List[dict]) -> List[dict]:
+    """
+    Run once per trading day during the 9:15–9:25 window.
+    If Nifty opens with a gap-down worse than BEARISH_SCORE_NSE_GAP_THRESHOLD (-0.75%),
+    log exit/trim decisions for all open positions before the day unfolds.
+
+      BTST_1d  → 100% exit (full position)
+      Swing_*  → 50% trim
+
+    Returns list of decision dicts logged.
+    """
+    global _preopen_gap_logged_today
+    if not HAVE_GLOBAL_SENTIMENT or _checkpoint is None:
+        return []
+
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+
+    # Only fire once per calendar day
+    if _preopen_gap_logged_today == today_str:
+        return []
+
+    gate_open  = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    gate_close = now.replace(hour=9, minute=25, second=0, microsecond=0)
+    if not (gate_open <= now <= gate_close):
+        return []
+
+    try:
+        # Previous day close
+        prev_data = yf.download('^NSEI', period='2d', progress=False, multi_level_index=False)
+        if prev_data is None or len(prev_data) < 2:
+            return []
+        prev_close = float(prev_data['Close'].iloc[-2])
+
+        # Today's open (first 5-minute candle)
+        open_data = yf.download('^NSEI', period='1d', interval='5m', progress=False, multi_level_index=False)
+        if open_data is None or len(open_data) == 0:
+            return []
+        today_open = float(open_data['Open'].iloc[0])
+
+        gap_pct = (today_open - prev_close) / prev_close * 100
+        log.info(
+            f"[PRE-OPEN GAP] Nifty gap: {gap_pct:+.2f}%"
+            f" (prev_close={prev_close:.0f}, open={today_open:.0f})"
+        )
+
+        if gap_pct > BEARISH_SCORE_NSE_GAP_THRESHOLD:
+            _preopen_gap_logged_today = today_str
+            return []  # Gap not severe enough
+
+        triggered = []
+        for trade in open_trades:
+            tid     = trade.get("id")
+            ticker  = trade.get("ticker", "UNKNOWN")
+            horizon = trade.get("horizon_label", "")
+            is_btst = "BTST" in horizon.upper()
+            trim_pct = 100 if is_btst else 50
+
+            try:
+                price_df = _get_daily_data(ticker, lookback_days=1)
+                decision_price = (
+                    float(price_df["Close"].iloc[-1])
+                    if price_df is not None and len(price_df) > 0
+                    else float(trade.get("entry_price", 0))
+                )
+            except Exception:
+                decision_price = float(trade.get("entry_price", 0))
+
+            reason = (
+                f"Pre-open gap: Nifty {gap_pct:+.2f}%"
+                f" (threshold={BEARISH_SCORE_NSE_GAP_THRESHOLD}%)"
+            )
+            did = _checkpoint.log_trim_decision(
+                position_id=tid,
+                position_ticker=ticker,
+                decision_price=decision_price,
+                bearish_score=None,
+                entry_bearish_score=None,
+                trim_reason=reason,
+                trim_percentage=trim_pct,
+            )
+            triggered.append({
+                "trade_id": tid, "ticker": ticker,
+                "horizon": horizon, "trim_pct": trim_pct, "decision_id": did,
+            })
+            log.warning(
+                f"[PRE-OPEN GAP] {'100% exit' if trim_pct == 100 else '50% trim'}: "
+                f"{ticker} ({horizon}) → decision #{did}"
+            )
+
+        _preopen_gap_logged_today = today_str
+        return triggered
+
+    except Exception as e:
+        log.warning(f"[PRE-OPEN GAP] Check failed: {e}")
+        return []
 
 
 # ============================================================
@@ -911,7 +1108,19 @@ class PositionRiskMonitor:
         # Assess
         health_results = assess_all_positions(open_trades, check_date)
 
-        # --- GLOBAL BEARISH: Intraday trim check (BTST only) ---
+        # --- GLOBAL BEARISH: NSE pre-open gap check (9:15–9:25 window) ---
+        if HAVE_GLOBAL_SENTIMENT:
+            try:
+                gap_decisions = check_nse_preopen_gap(open_trades)
+                if gap_decisions:
+                    log.warning(
+                        f"[PRE-OPEN GAP] {len(gap_decisions)} position(s) "
+                        f"flagged for exit/trim"
+                    )
+            except Exception as e:
+                log.warning(f"[PRE-OPEN GAP] Check failed: {e}")
+
+        # --- GLOBAL BEARISH: Intraday trim check (BTST 30% / Swing 50% on RED_ALERT) ---
         if HAVE_GLOBAL_SENTIMENT:
             try:
                 entry_scores = {
@@ -921,11 +1130,52 @@ class PositionRiskMonitor:
                 intraday_trims = check_intraday_bearish_trim(open_trades, entry_scores)
                 if intraday_trims:
                     log.warning(
-                        f"[GLOBAL BEARISH] {len(intraday_trims)} BTST trim "
+                        f"[GLOBAL BEARISH] {len(intraday_trims)} trim "
                         f"decision(s) logged this cycle"
                     )
             except Exception as e:
                 log.warning(f"[GLOBAL BEARISH] Intraday check failed: {e}")
+
+        # --- GLOBAL BEARISH: YELLOW_ALERT — tighten SL on BULLISH positions ---
+        if HAVE_GLOBAL_SENTIMENT:
+            try:
+                yellow_score, _ = _gsm.calculate_bearish_score()
+                if BEARISH_SCORE_YELLOW_ALERT <= yellow_score < BEARISH_SCORE_RED_ALERT:
+                    tighten_count = 0
+                    for trade in open_trades:
+                        if trade.get("direction", "").upper() != "BULLISH":
+                            continue
+                        sl   = trade.get("sl_price") or 0
+                        entry = trade.get("entry_price") or 0
+                        if not sl or not entry or sl >= entry:
+                            continue
+                        # Tighten SL by TIGHTEN_SL_YELLOW_ALERT (25%) toward entry price
+                        new_sl = sl + (entry - sl) * TIGHTEN_SL_YELLOW_ALERT
+                        self.conn.execute(
+                            "UPDATE trades SET sl_price=? WHERE id=? AND status='OPEN'",
+                            (round(new_sl, 2), trade["id"]),
+                        )
+                        tighten_count += 1
+                    if tighten_count:
+                        self.conn.commit()
+                        log.warning(
+                            f"[YELLOW ALERT] Tightened SL for {tighten_count} "
+                            f"BULLISH position(s) (score={yellow_score})"
+                        )
+            except Exception as e:
+                log.warning(f"[YELLOW ALERT] SL tighten failed: {e}")
+
+        # --- INTRADAY EARLY-EXIT: dead-trade force exits (BTST_1d) ---
+        if HAVE_INTRADAY_EXIT_MONITOR:
+            try:
+                early_exits = check_intraday_early_exit(open_trades)
+                if early_exits:
+                    log.warning(
+                        f"[EARLY EXIT] {len(early_exits)} dead-trade decision(s) "
+                        f"logged this cycle"
+                    )
+            except Exception as e:
+                log.warning(f"[EARLY EXIT] Intraday early-exit check failed: {e}")
 
         # --- SHORT_1d: Force-close at 15:15 IST (no overnight shorts allowed) ---
         if SHORT_1D_ENABLED:
@@ -942,6 +1192,130 @@ class PositionRiskMonitor:
         # Log + persist
         summary = log_risk_report(health_results, check_date)
         persist_health_results(self.conn, health_results, check_date)
+
+        # --- AUTO-EXECUTE: pipe confidence-decay decisions into trim queue ---
+        # EXIT IMMEDIATELY → 100% trim (full close on next startup)
+        # REDUCE 50%       →  50% trim (half position on next startup)
+        if HAVE_GLOBAL_SENTIMENT and _checkpoint is not None:
+            try:
+                _checkpoint.ensure_trim_table()
+                auto_logged = 0
+                for h in health_results:
+                    action = h.get("action", "HOLD")
+                    if action not in ("EXIT IMMEDIATELY", "REDUCE 50%"):
+                        continue
+                    trade_id = h["trade_id"]
+                    ticker   = h["ticker"]
+
+                    # Skip if a decision was already logged today for this position
+                    already = self.conn.execute(
+                        """SELECT 1 FROM bearish_trim_decisions
+                           WHERE position_id = ?
+                             AND date(decision_timestamp) = date('now')
+                             AND execution_status IN ('PENDING','EXECUTED','EXECUTED_FULL_EXIT')
+                           LIMIT 1""",
+                        (trade_id,),
+                    ).fetchone()
+                    if already:
+                        continue
+
+                    trim_pct = 100 if action == "EXIT IMMEDIATELY" else 50
+
+                    # With qty=1 (standard paper trade), 50% trim = 0 → treat as full exit
+                    try:
+                        trade_qty = self.conn.execute(
+                            "SELECT quantity FROM trades WHERE id=?", (trade_id,)
+                        ).fetchone()
+                        if trade_qty and int(trade_qty[0] or 1) == 1:
+                            trim_pct = 100
+                    except Exception:
+                        pass
+
+                    # Use last close as decision price
+                    try:
+                        yf_sym = (ticker if (".NS" in ticker or ".BO" in ticker
+                                  or ticker.startswith("^")) else f"{ticker}.NS")
+                        df = _get_daily_data(yf_sym, lookback_days=2)
+                        decision_price = (
+                            float(df["Close"].iloc[-1])
+                            if df is not None and len(df) > 0
+                            else float(self.conn.execute(
+                                "SELECT entry_price FROM trades WHERE id=?",
+                                (trade_id,)
+                            ).fetchone()[0] or 0)
+                        )
+                    except Exception:
+                        decision_price = 0.0
+
+                    if not decision_price:
+                        continue
+
+                    # --- PRICE-REALITY GATE ---
+                    # Never auto-exit a profitable trade based on confidence alone.
+                    # If current price > entry price, the trade is making money.
+                    # Let the SL / target / expiry handle it naturally.
+                    try:
+                        entry_row = self.conn.execute(
+                            "SELECT entry_price, direction FROM trades WHERE id=?",
+                            (trade_id,)
+                        ).fetchone()
+                        if entry_row:
+                            ep        = float(entry_row[0] or 0)
+                            direction = (entry_row[1] or "BULLISH").upper()
+                            if ep > 0:
+                                if direction == "BULLISH" and decision_price > ep:
+                                    log.info(
+                                        f"[AUTO-QUEUE] SKIPPED {ticker}: profitable "
+                                        f"({decision_price:.2f} > entry {ep:.2f}), "
+                                        f"let SL/target handle it"
+                                    )
+                                    continue
+                                elif direction == "BEARISH" and decision_price < ep:
+                                    log.info(
+                                        f"[AUTO-QUEUE] SKIPPED {ticker}: profitable short "
+                                        f"({decision_price:.2f} < entry {ep:.2f}), "
+                                        f"let SL/target handle it"
+                                    )
+                                    continue
+                    except Exception:
+                        pass  # if we can't check, proceed with the exit
+
+                    # Also skip trades entered today (no trajectory data yet — too early to judge)
+                    if h.get("days_held", 0) < 1:
+                        log.info(
+                            f"[AUTO-QUEUE] SKIPPED {ticker}: entered today (age=0d), "
+                            f"too early to judge trajectory"
+                        )
+                        continue
+
+                    reason = (
+                        f"confidence-decay {action}: "
+                        f"conf={h['adjusted_confidence']:.1f}% "
+                        f"(age={h['days_held']}d, regime={h['entry_regime']}"
+                        f"→{h['current_regime']}, sector={h['sector_momentum']:+.2f}%)"
+                    )
+                    _checkpoint.log_trim_decision(
+                        position_id=trade_id,
+                        position_ticker=ticker,
+                        decision_price=decision_price,
+                        bearish_score=None,
+                        entry_bearish_score=None,
+                        trim_reason=reason,
+                        trim_percentage=trim_pct,
+                    )
+                    auto_logged += 1
+                    log.warning(
+                        f"[AUTO-QUEUE] {action}: {ticker} "
+                        f"({trim_pct}% @ {decision_price:.2f}) → PENDING execution"
+                    )
+
+                if auto_logged:
+                    log.warning(
+                        f"[AUTO-QUEUE] {auto_logged} decision(s) queued. "
+                        f"Will execute on next paper_trader.py startup."
+                    )
+            except Exception as e:
+                log.warning(f"[AUTO-QUEUE] Failed to log confidence-decay decisions: {e}")
 
         return summary
 

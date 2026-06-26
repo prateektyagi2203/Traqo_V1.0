@@ -31,7 +31,8 @@ def get_trajectory_score(trade: dict) -> Optional[int]:
         from position_risk_monitor import _get_daily_data
         
         ticker = trade.get("ticker", "UNKNOWN")
-        df = _get_daily_data(f"{ticker}.NS", lookback_days=5)
+        yf_sym = ticker if (".NS" in ticker or ".BO" in ticker or ticker.startswith("^")) else f"{ticker}.NS"
+        df = _get_daily_data(yf_sym, lookback_days=5)
         
         if df is None or len(df) < 2:
             return None
@@ -111,7 +112,8 @@ def check_intraday_early_exit(
         
         # Condition 2: Price check — current price vs entry
         try:
-            df = yf.download(f"{ticker}.NS", period="1d", progress=False)
+            yf_sym = ticker if (".NS" in ticker or ".BO" in ticker or ticker.startswith("^")) else f"{ticker}.NS"
+            df = yf.download(yf_sym, period="1d", progress=False, multi_level_index=False)
             if df is None or len(df) == 0:
                 continue
             current_price = float(df["Close"].iloc[-1])

@@ -230,6 +230,154 @@ def q_stats():
     }
 
 
+def q_stats_for_range(from_date: str, to_date: str) -> dict:
+    """Return analytics for closed trades whose exit_date falls within [from_date, to_date]."""
+    c = get_db()
+    base_where = "status NOT IN ('OPEN','CANCELLED') AND exit_date >= ? AND exit_date <= ?"
+    params = (from_date, to_date)
+
+    total = c.execute(f"SELECT COUNT(*) FROM trades WHERE {base_where}", params).fetchone()[0]
+    wins = c.execute(f"SELECT COUNT(*) FROM trades WHERE {base_where} AND status IN ('WON','EXPIRED_WIN')", params).fetchone()[0]
+    losses = c.execute(f"SELECT COUNT(*) FROM trades WHERE {base_where} AND status IN ('LOST','EXPIRED_LOSS')", params).fetchone()[0]
+    avg_w = c.execute(f"SELECT AVG(actual_return_pct) FROM trades WHERE {base_where} AND status IN ('WON','EXPIRED_WIN')", params).fetchone()[0] or 0
+    avg_l = c.execute(f"SELECT AVG(actual_return_pct) FROM trades WHERE {base_where} AND status IN ('LOST','EXPIRED_LOSS')", params).fetchone()[0] or 0
+    tot_ret = c.execute(f"SELECT SUM(actual_return_pct) FROM trades WHERE {base_where}", params).fetchone()[0] or 0
+
+    win_rate = round((wins / total * 100), 1) if total else 0
+    pf = round((abs(avg_w * wins) / abs(avg_l * losses)), 2) if (losses and avg_l) else 0
+
+    # Equity curve — cumulative sum of returns sorted by exit_date
+    eq_rows = c.execute(
+        f"SELECT exit_date, actual_return_pct FROM trades WHERE {base_where} ORDER BY exit_date, id",
+        params
+    ).fetchall()
+    cumulative = 0.0
+    equity_curve = []
+    for row in eq_rows:
+        cumulative += (row[1] or 0)
+        equity_curve.append({"date": row[0], "cumulative_return": round(cumulative, 2)})
+
+    # Pattern breakdown (top 10 by trade count)
+    pat_rows = c.execute(f"""
+        SELECT patterns,
+               COUNT(*) as total,
+               SUM(CASE WHEN status IN ('WON','EXPIRED_WIN') THEN 1 ELSE 0 END) as wins,
+               SUM(CASE WHEN status IN ('LOST','EXPIRED_LOSS') THEN 1 ELSE 0 END) as losses,
+               AVG(actual_return_pct) as avg_ret
+        FROM trades WHERE {base_where}
+        GROUP BY patterns ORDER BY total DESC LIMIT 10
+    """, params).fetchall()
+    pattern_breakdown = []
+    for r in pat_rows:
+        t = r[1]
+        pattern_breakdown.append({
+            "pattern": r[0] or "—",
+            "total": t,
+            "wins": r[2],
+            "losses": r[3],
+            "win_rate": round(r[2] / t * 100, 1) if t else 0,
+            "avg_ret": round(r[4] or 0, 2),
+        })
+
+    # Horizon breakdown
+    hz_rows = c.execute(f"""
+        SELECT horizon_label, horizon_days,
+               COUNT(*) as total,
+               SUM(CASE WHEN status IN ('WON','EXPIRED_WIN') THEN 1 ELSE 0 END) as wins,
+               SUM(CASE WHEN status IN ('LOST','EXPIRED_LOSS') THEN 1 ELSE 0 END) as losses,
+               AVG(actual_return_pct) as avg_ret,
+               SUM(actual_return_pct) as total_ret
+        FROM trades WHERE {base_where}
+        GROUP BY horizon_label ORDER BY horizon_days
+    """, params).fetchall()
+    horizon_breakdown = []
+    for r in hz_rows:
+        t = r[2]
+        horizon_breakdown.append({
+            "horizon": r[0] or "—",
+            "total": t,
+            "wins": r[3],
+            "losses": r[4],
+            "win_rate": round(r[3] / t * 100, 1) if t else 0,
+            "avg_ret": round(r[5] or 0, 2),
+            "total_ret": round(r[6] or 0, 2),
+        })
+
+    # Sector breakdown
+    sec_rows = c.execute(f"""
+        SELECT sector,
+               COUNT(*) as total,
+               SUM(CASE WHEN status IN ('WON','EXPIRED_WIN') THEN 1 ELSE 0 END) as wins,
+               SUM(CASE WHEN status IN ('LOST','EXPIRED_LOSS') THEN 1 ELSE 0 END) as losses,
+               AVG(actual_return_pct) as avg_ret
+        FROM trades WHERE {base_where}
+        GROUP BY sector ORDER BY total DESC
+    """, params).fetchall()
+    sector_breakdown = []
+    for r in sec_rows:
+        t = r[1]
+        sector_display = _SECTOR_DISPLAY.get(r[0] or "", r[0] or "Other")
+        sector_breakdown.append({
+            "sector": sector_display,
+            "total": t,
+            "wins": r[2],
+            "losses": r[3],
+            "win_rate": round(r[2] / t * 100, 1) if t else 0,
+            "avg_ret": round(r[4] or 0, 2),
+        })
+
+    # Streak — iterate trades sorted by exit_date ascending, find final consecutive run
+    streak_rows = c.execute(
+        f"SELECT status FROM trades WHERE {base_where} ORDER BY exit_date ASC, id ASC",
+        params
+    ).fetchall()
+    streak_count = 0
+    streak_type = "NONE"
+    for row in reversed(streak_rows):
+        s = row[0]
+        is_win = s in ("WON", "EXPIRED_WIN")
+        is_loss = s in ("LOST", "EXPIRED_LOSS")
+        if streak_count == 0:
+            if is_win:
+                streak_type = "WIN"
+                streak_count = 1
+            elif is_loss:
+                streak_type = "LOSS"
+                streak_count = 1
+            else:
+                break
+        else:
+            if streak_type == "WIN" and is_win:
+                streak_count += 1
+            elif streak_type == "LOSS" and is_loss:
+                streak_count += 1
+            else:
+                break
+
+    # Trade IDs in range for client-side table highlighting
+    id_rows = c.execute(
+        f"SELECT id FROM trades WHERE {base_where}",
+        params
+    ).fetchall()
+    trade_ids = [r[0] for r in id_rows]
+
+    c.close()
+    return {
+        "stats": {
+            "total": total, "wins": wins, "losses": losses,
+            "win_rate": win_rate, "profit_factor": pf,
+            "total_return": round(tot_ret, 2),
+            "avg_win": round(avg_w, 2), "avg_loss": round(avg_l, 2),
+        },
+        "equity_curve": equity_curve,
+        "pattern_breakdown": pattern_breakdown,
+        "horizon_breakdown": horizon_breakdown,
+        "sector_breakdown": sector_breakdown,
+        "streak": {"type": streak_type, "count": streak_count},
+        "trade_ids": trade_ids,
+    }
+
+
 def q_open_trades():
     c = get_db()
     rows = [dict(r) for r in c.execute("SELECT * FROM trades WHERE status='OPEN' ORDER BY entry_date DESC, ticker").fetchall()]
@@ -747,8 +895,6 @@ def status_badge(status):
 # ============================================================
 def render_dashboard():
     s = q_stats()
-    open_trades = q_open_trades()
-
     cards = f'''
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
       {stat_card("Open Trades", s["open_trades"], f'{s["today_entered"]} entered today', "indigo")}
@@ -765,131 +911,185 @@ def render_dashboard():
       {stat_card("Total Trades", s["total_trades"], "all time", "cyan")}
     </div>'''
 
-    # Group open trades by stock
-    by_stock = {}
-    for t in open_trades:
-        tk = _ticker(t["ticker"])
-        if tk not in by_stock:
-            raw_sector = (t.get("sector") or "").strip()
-            by_stock[tk] = {
-                "count": 0,
-                "direction": t["direction"],
-                "cap": _get_cap(t["ticker"]),
-                "sector": _SECTOR_DISPLAY.get(raw_sector, raw_sector.title() if raw_sector else "Other"),
-            }
-        by_stock[tk]["count"] += 1
-
-    stocks_html = ""
-    if by_stock:
-        # Collect unique caps and sectors for filter buttons
-        all_caps = sorted(set(info["cap"] for info in by_stock.values()))
-        all_sectors = sorted(set(info["sector"] for info in by_stock.values()))
-
-        cap_buttons = ''.join(
-            f'<button onclick="filterDashStocks(\'cap\', \'{c}\')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-group="cap" data-value="{c}">{c}</button>'
-            for c in all_caps
-        )
-        sector_buttons = ''.join(
-            f'<button onclick="filterDashStocks(\'sector\', \'{_e(sector)}\')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-group="sector" data-value="{_e(sector)}">{_e(sector)}</button>'
-            for sector in all_sectors
-        )
-
-        stock_chips = ""
-        for tk, info in sorted(by_stock.items()):
-            dir_badge = badge("↑", "bullish")
-            cap_color = "bg-blue-50 text-blue-600" if info["cap"] == "LargeCap" else "bg-purple-50 text-purple-600"
-            stock_chips += f'''
-            <div class="dash-stock-chip rounded-lg bg-white border border-gray-200 p-3 hover:border-blue-300 transition shadow-sm"
-                 data-cap="{_e(info['cap'])}" data-sector="{_e(info['sector'])}" data-stock="{_e(tk)}">
-              <div class="flex items-center justify-between">
-                <span class="text-sm font-semibold text-gray-800">{_e(tk)}</span>
-                {dir_badge}
-              </div>
-              <p class="text-xs text-gray-400 mt-1">{info["count"]} active trade{"s" if info["count"] > 1 else ""}</p>
-              <div class="flex items-center gap-1.5 mt-2">
-                <span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium {cap_color}">{info["cap"]}</span>
-                <span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-500">{_e(info["sector"])}</span>
-              </div>
-            </div>'''
-
-        stocks_html = f'''
-        <div class="glass rounded-xl p-6 mt-6">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-semibold text-gray-800">Open Positions by Stock</h3>
-            <span id="dashStockCount" class="text-xs text-gray-400">{len(by_stock)} stocks</span>
-          </div>
-          <!-- Sort & Filter Bar -->
-          <div class="mb-4 space-y-2">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-xs font-medium text-gray-500 w-12">Sort:</span>
-              <button onclick="sortDashStocks('alpha')" class="dash-sort-btn px-3 py-1 rounded-full text-xs font-medium border border-blue-400 bg-blue-50 text-blue-600 transition" data-sort="alpha">A→Z</button>
-              <button onclick="sortDashStocks('alpha-desc')" class="dash-sort-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-sort="alpha-desc">Z→A</button>
-              <button onclick="sortDashStocks('trades')" class="dash-sort-btn px-3 py-1 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition" data-sort="trades">Most Trades</button>
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-xs font-medium text-gray-500 w-12">Cap:</span>
-              <button onclick="filterDashStocks('cap', 'All')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-blue-400 bg-blue-50 text-blue-600 transition" data-group="cap" data-value="All">All</button>
-              {cap_buttons}
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-xs font-medium text-gray-500 w-12">Sector:</span>
-              <button onclick="filterDashStocks('sector', 'All')" class="dash-filter-btn px-3 py-1 rounded-full text-xs font-medium border border-blue-400 bg-blue-50 text-blue-600 transition" data-group="sector" data-value="All">All</button>
-              {sector_buttons}
-            </div>
-          </div>
-          <div id="dashStockGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">{stock_chips}</div>
+    date_range_html = '''
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <div class="glass rounded-xl border border-gray-200 shadow-sm p-5 mt-6">
+      <div class="mb-4">
+        <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wider">Date Range Analysis</h3>
+        <p class="text-xs text-gray-400 mt-0.5">Analyse closed trade performance for a specific exit-date window</p>
+      </div>
+      <div class="flex flex-wrap items-end gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">From</label>
+          <input type="date" id="dr-from" class="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400">
         </div>
-        <script>
-        (function() {{
-          let activeCap = 'All', activeSector = 'All';
-          window.filterDashStocks = function(group, value) {{
-            if (group === 'cap') activeCap = value;
-            if (group === 'sector') activeSector = value;
-            // Update button styles
-            document.querySelectorAll('.dash-filter-btn[data-group="'+group+'"]').forEach(b => {{
-              if (b.dataset.value === value) {{
-                b.className = b.className.replace('border-gray-200 bg-white text-gray-600','').replace('border-blue-400 bg-blue-50 text-blue-600','') + ' border-blue-400 bg-blue-50 text-blue-600';
-              }} else {{
-                b.className = b.className.replace('border-blue-400 bg-blue-50 text-blue-600','').replace('border-gray-200 bg-white text-gray-600','') + ' border-gray-200 bg-white text-gray-600';
-              }}
-            }});
-            applyDashFilters();
-          }};
-          window.sortDashStocks = function(mode) {{
-            const grid = document.getElementById('dashStockGrid');
-            const chips = Array.from(grid.querySelectorAll('.dash-stock-chip'));
-            chips.sort((a, b) => {{
-              if (mode === 'alpha') return a.dataset.stock.localeCompare(b.dataset.stock);
-              if (mode === 'alpha-desc') return b.dataset.stock.localeCompare(a.dataset.stock);
-              if (mode === 'trades') {{
-                const ca = parseInt(a.querySelector('.text-gray-400').textContent);
-                const cb = parseInt(b.querySelector('.text-gray-400').textContent);
-                return cb - ca;
-              }}
-              return 0;
-            }});
-            chips.forEach(c => grid.appendChild(c));
-            // Update sort button styles
-            document.querySelectorAll('.dash-sort-btn').forEach(b => {{
-              if (b.dataset.sort === mode) {{
-                b.className = b.className.replace('border-gray-200 bg-white text-gray-600','').replace('border-blue-400 bg-blue-50 text-blue-600','') + ' border-blue-400 bg-blue-50 text-blue-600';
-              }} else {{
-                b.className = b.className.replace('border-blue-400 bg-blue-50 text-blue-600','').replace('border-gray-200 bg-white text-gray-600','') + ' border-gray-200 bg-white text-gray-600';
-              }}
-            }});
-          }};
-          function applyDashFilters() {{
-            let shown = 0;
-            document.querySelectorAll('.dash-stock-chip').forEach(c => {{
-              const capMatch = activeCap === 'All' || c.dataset.cap === activeCap;
-              const secMatch = activeSector === 'All' || c.dataset.sector === activeSector;
-              if (capMatch && secMatch) {{ c.style.display = ''; shown++; }}
-              else {{ c.style.display = 'none'; }}
-            }});
-            document.getElementById('dashStockCount').textContent = shown + ' of ' + document.querySelectorAll('.dash-stock-chip').length + ' stocks';
-          }}
-        }})();
-        </script>'''
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">To</label>
+          <input type="date" id="dr-to" class="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400">
+        </div>
+        <button onclick="executeAnalysis()" id="dr-execute-btn" class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition shadow-sm disabled:opacity-60">Execute</button>
+        <button onclick="clearDateFilter()" id="dr-clear-btn" style="display:none" class="px-4 py-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm transition">Clear</button>
+      </div>
+    </div>
+    <div id="date-range-panel" style="display:none" class="mt-6">
+      <div class="flex items-baseline gap-3 mb-4">
+        <h3 class="text-lg font-bold text-gray-800" id="dr-range-label">&mdash;</h3>
+        <span class="text-sm text-gray-400" id="dr-range-subtitle"></span>
+      </div>
+      <div class="grid grid-cols-4 gap-4 mb-4">
+        <div class="glass rounded-xl p-4"><p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Closed</p><p class="mt-1 text-2xl font-bold text-gray-800" id="dr-total">&mdash;</p></div>
+        <div class="glass rounded-xl p-4"><p class="text-xs font-medium text-emerald-600 uppercase tracking-wider">Wins</p><p class="mt-1 text-2xl font-bold text-gray-800" id="dr-wins">&mdash;</p></div>
+        <div class="glass rounded-xl p-4"><p class="text-xs font-medium text-red-500 uppercase tracking-wider">Losses</p><p class="mt-1 text-2xl font-bold text-gray-800" id="dr-losses">&mdash;</p></div>
+        <div class="glass rounded-xl p-4"><p class="text-xs font-medium text-amber-600 uppercase tracking-wider">Win Rate</p><p class="mt-1 text-2xl font-bold text-gray-800" id="dr-wr">&mdash;</p></div>
+      </div>
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class="glass rounded-xl p-4"><p class="text-xs font-medium text-blue-600 uppercase tracking-wider">Profit Factor</p><p class="mt-1 text-2xl font-bold text-gray-800" id="dr-pf">&mdash;</p></div>
+        <div class="glass rounded-xl p-4"><p class="text-xs font-medium text-indigo-600 uppercase tracking-wider">Total Return</p><p class="mt-1 text-2xl font-bold text-gray-800" id="dr-ret">&mdash;</p></div>
+        <div class="glass rounded-xl p-4"><p class="text-xs font-medium text-emerald-600 uppercase tracking-wider">Avg Win</p><p class="mt-1 text-2xl font-bold text-gray-800" id="dr-avgw">&mdash;</p></div>
+        <div class="glass rounded-xl p-4"><p class="text-xs font-medium text-red-500 uppercase tracking-wider">Avg Loss</p><p class="mt-1 text-2xl font-bold text-gray-800" id="dr-avgl">&mdash;</p></div>
+      </div>
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class="col-span-3 glass rounded-xl p-5">
+          <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Equity Curve (Cumulative Return %)</p>
+          <canvas id="equityChart" height="100"></canvas>
+        </div>
+        <div class="glass rounded-xl p-5 flex flex-col items-center justify-center">
+          <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 text-center">Current Streak</p>
+          <div id="dr-streak-badge" class="text-4xl font-black text-gray-300">&mdash;</div>
+          <div id="dr-streak-label" class="mt-2 text-sm text-gray-400"></div>
+        </div>
+      </div>
+      <div class="grid grid-cols-3 gap-4">
+        <div class="glass rounded-xl overflow-hidden">
+          <div class="px-4 py-3 bg-gray-50 border-b border-gray-200"><p class="text-xs font-semibold text-gray-600 uppercase tracking-wider">Top Patterns</p></div>
+          <div class="overflow-x-auto scrollbar-thin"><table class="w-full text-xs">
+            <thead><tr class="border-b border-gray-100 bg-gray-50 text-gray-500"><th class="px-3 py-2 text-left">Pattern</th><th class="px-2 py-2 text-right">W</th><th class="px-2 py-2 text-right">L</th><th class="px-2 py-2 text-right">Win%</th><th class="px-2 py-2 text-right">Avg%</th></tr></thead>
+            <tbody id="dr-pattern-tbody"></tbody>
+          </table></div>
+        </div>
+        <div class="glass rounded-xl overflow-hidden">
+          <div class="px-4 py-3 bg-gray-50 border-b border-gray-200"><p class="text-xs font-semibold text-gray-600 uppercase tracking-wider">Horizon Breakdown</p></div>
+          <div class="overflow-x-auto scrollbar-thin"><table class="w-full text-xs">
+            <thead><tr class="border-b border-gray-100 bg-gray-50 text-gray-500"><th class="px-3 py-2 text-left">Horizon</th><th class="px-2 py-2 text-right">W</th><th class="px-2 py-2 text-right">L</th><th class="px-2 py-2 text-right">Win%</th><th class="px-2 py-2 text-right">Total%</th></tr></thead>
+            <tbody id="dr-horizon-tbody"></tbody>
+          </table></div>
+        </div>
+        <div class="glass rounded-xl overflow-hidden">
+          <div class="px-4 py-3 bg-gray-50 border-b border-gray-200"><p class="text-xs font-semibold text-gray-600 uppercase tracking-wider">Sector Breakdown</p></div>
+          <div class="overflow-x-auto scrollbar-thin"><table class="w-full text-xs">
+            <thead><tr class="border-b border-gray-100 bg-gray-50 text-gray-500"><th class="px-3 py-2 text-left">Sector</th><th class="px-2 py-2 text-right">W</th><th class="px-2 py-2 text-right">L</th><th class="px-2 py-2 text-right">Win%</th><th class="px-2 py-2 text-right">Avg%</th></tr></thead>
+            <tbody id="dr-sector-tbody"></tbody>
+          </table></div>
+        </div>
+      </div>
+    </div>
+    <script>
+    var activeDateFrom = null, activeDateTo = null;
+    var equityChart = null;
+    function executeAnalysis() {
+      var from = document.getElementById('dr-from').value;
+      var to   = document.getElementById('dr-to').value;
+      if (!from || !to) { alert('Please select both From and To dates.'); return; }
+      if (from > to) { alert('From date must be on or before To date.'); return; }
+      var btn = document.getElementById('dr-execute-btn');
+      btn.textContent = 'Loading\u2026';
+      btn.disabled = true;
+      fetch('/api/stats-by-date?from=' + from + '&to=' + to)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) { alert('Error: ' + data.error); return; }
+          var s = data.stats;
+          var fmtD = function(iso) {
+            if (!iso) return '\u2014';
+            var p = iso.split('-');
+            var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            return p[2] + ' ' + months[parseInt(p[1],10)-1] + ' ' + p[0].slice(2);
+          };
+          document.getElementById('dr-range-label').textContent = fmtD(from) + ' \u2192 ' + fmtD(to);
+          document.getElementById('dr-range-subtitle').textContent = s.total + ' closed trade' + (s.total !== 1 ? 's' : '') + ' in selected range';
+          document.getElementById('dr-total').textContent   = s.total;
+          document.getElementById('dr-wins').textContent    = s.wins;
+          document.getElementById('dr-losses').textContent  = s.losses;
+          var wrEl = document.getElementById('dr-wr');
+          wrEl.textContent = s.win_rate + '%';
+          wrEl.className   = 'mt-1 text-2xl font-bold ' + (s.win_rate >= 55 ? 'text-emerald-600' : s.win_rate >= 45 ? 'text-amber-600' : 'text-red-600');
+          var pfEl = document.getElementById('dr-pf');
+          pfEl.textContent = s.profit_factor;
+          pfEl.className   = 'mt-1 text-2xl font-bold ' + (s.profit_factor >= 1.5 ? 'text-emerald-600' : s.profit_factor >= 1.0 ? 'text-amber-600' : 'text-red-600');
+          var retEl = document.getElementById('dr-ret');
+          retEl.textContent = (s.total_return >= 0 ? '+' : '') + s.total_return.toFixed(2) + '%';
+          retEl.className   = 'mt-1 text-2xl font-bold ' + (s.total_return >= 0 ? 'text-emerald-600' : 'text-red-600');
+          document.getElementById('dr-avgw').textContent = (s.avg_win >= 0 ? '+' : '') + s.avg_win.toFixed(2) + '%';
+          document.getElementById('dr-avgl').textContent = s.avg_loss.toFixed(2) + '%';
+          var ctx = document.getElementById('equityChart').getContext('2d');
+          if (equityChart) { equityChart.destroy(); }
+          var eq = data.equity_curve;
+          var labels = eq.map(function(p) { return p.date; });
+          var values = eq.map(function(p) { return p.cumulative_return; });
+          var lastVal   = values.length ? values[values.length - 1] : 0;
+          var lineColor = lastVal >= 0 ? 'rgb(16,185,129)' : 'rgb(239,68,68)';
+          var fillColor = lastVal >= 0 ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.08)';
+          equityChart = new Chart(ctx, {
+            type: 'line',
+            data: { labels: labels, datasets: [{ label: 'Cumulative Return %', data: values, borderColor: lineColor, backgroundColor: fillColor, borderWidth: 2, pointRadius: eq.length > 60 ? 0 : 3, pointHoverRadius: 5, fill: true, tension: 0.3 }] },
+            options: { responsive: true, interaction: { mode: 'index', intersect: false }, plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(c) { return ' ' + c.parsed.y.toFixed(2) + '%'; } } } }, scales: { x: { ticks: { maxTicksLimit: 8, font: { size: 10 } }, grid: { display: false } }, y: { ticks: { font: { size: 10 }, callback: function(v) { return v.toFixed(1) + '%'; } }, grid: { color: 'rgba(0,0,0,0.04)' } } } }
+          });
+          var sk = data.streak;
+          var skBadge = document.getElementById('dr-streak-badge');
+          var skLabel = document.getElementById('dr-streak-label');
+          if (sk.count > 0) {
+            var isWin = sk.type === 'WIN';
+            skBadge.textContent = sk.count + (isWin ? 'W' : 'L');
+            skBadge.className   = 'text-4xl font-black ' + (isWin ? 'text-emerald-500' : 'text-red-500');
+            skLabel.textContent = isWin ? 'consecutive wins' : 'consecutive losses';
+          } else {
+            skBadge.textContent = '\u2014';
+            skBadge.className   = 'text-4xl font-black text-gray-300';
+            skLabel.textContent = 'No closed trades in range';
+          }
+          var patHtml = '';
+          data.pattern_breakdown.forEach(function(r) {
+            var wc = r.win_rate >= 60 ? 'text-emerald-600 font-semibold' : r.win_rate >= 45 ? 'text-amber-600' : 'text-red-500';
+            var rc = r.avg_ret >= 0 ? 'text-emerald-600' : 'text-red-500';
+            patHtml += '<tr class="border-b border-gray-100 hover:bg-gray-50"><td class="px-3 py-2 text-gray-700 max-w-[110px] truncate" title="' + r.pattern + '">' + r.pattern + '</td><td class="px-2 py-2 text-right text-emerald-600">' + r.wins + '</td><td class="px-2 py-2 text-right text-red-500">' + r.losses + '</td><td class="px-2 py-2 text-right ' + wc + '">' + r.win_rate + '%</td><td class="px-2 py-2 text-right ' + rc + '">' + (r.avg_ret >= 0 ? '+' : '') + r.avg_ret + '%</td></tr>';
+          });
+          document.getElementById('dr-pattern-tbody').innerHTML = patHtml || '<tr><td colspan="5" class="px-3 py-4 text-center text-gray-400 text-xs">No data</td></tr>';
+          var hzHtml = '';
+          data.horizon_breakdown.forEach(function(r) {
+            var wc = r.win_rate >= 60 ? 'text-emerald-600 font-semibold' : r.win_rate >= 45 ? 'text-amber-600' : 'text-red-500';
+            var rc = r.total_ret >= 0 ? 'text-emerald-600' : 'text-red-500';
+            hzHtml += '<tr class="border-b border-gray-100 hover:bg-gray-50"><td class="px-3 py-2 text-gray-700 font-medium">' + r.horizon + '</td><td class="px-2 py-2 text-right text-emerald-600">' + r.wins + '</td><td class="px-2 py-2 text-right text-red-500">' + r.losses + '</td><td class="px-2 py-2 text-right ' + wc + '">' + r.win_rate + '%</td><td class="px-2 py-2 text-right ' + rc + '">' + (r.total_ret >= 0 ? '+' : '') + r.total_ret + '%</td></tr>';
+          });
+          document.getElementById('dr-horizon-tbody').innerHTML = hzHtml || '<tr><td colspan="5" class="px-3 py-4 text-center text-gray-400 text-xs">No data</td></tr>';
+          var secHtml = '';
+          data.sector_breakdown.forEach(function(r) {
+            var wc = r.win_rate >= 60 ? 'text-emerald-600 font-semibold' : r.win_rate >= 45 ? 'text-amber-600' : 'text-red-500';
+            var rc = r.avg_ret >= 0 ? 'text-emerald-600' : 'text-red-500';
+            secHtml += '<tr class="border-b border-gray-100 hover:bg-gray-50"><td class="px-3 py-2 text-gray-700">' + r.sector + '</td><td class="px-2 py-2 text-right text-emerald-600">' + r.wins + '</td><td class="px-2 py-2 text-right text-red-500">' + r.losses + '</td><td class="px-2 py-2 text-right ' + wc + '">' + r.win_rate + '%</td><td class="px-2 py-2 text-right ' + rc + '">' + (r.avg_ret >= 0 ? '+' : '') + r.avg_ret + '%</td></tr>';
+          });
+          document.getElementById('dr-sector-tbody').innerHTML = secHtml || '<tr><td colspan="5" class="px-3 py-4 text-center text-gray-400 text-xs">No data</td></tr>';
+          document.getElementById('date-range-panel').style.display = '';
+          document.getElementById('dr-clear-btn').style.display = '';
+        })
+        .catch(function(e) { alert('Request failed: ' + e); })
+        .finally(function() { btn.textContent = 'Execute'; btn.disabled = false; });
+    }
+    function clearDateFilter() {
+      document.getElementById('date-range-panel').style.display = 'none';
+      document.getElementById('dr-clear-btn').style.display = 'none';
+      if (equityChart) { equityChart.destroy(); equityChart = null; }
+    }
+    (function() {
+      var today = new Date();
+      var from  = new Date(today);
+      from.setDate(from.getDate() - 30);
+      var fmt = function(d) { return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); };
+      var fromEl = document.getElementById('dr-from');
+      var toEl   = document.getElementById('dr-to');
+      if (fromEl) fromEl.value = fmt(from);
+      if (toEl)   toEl.value   = fmt(today);
+    })();
+    </script>'''
 
     body = f'''
     <div class="flex items-center justify-between mb-6">
@@ -903,7 +1103,7 @@ def render_dashboard():
       </a>
     </div>
     {cards}
-    {stocks_html}'''
+    {date_range_html}'''
 
     return page_shell("Dashboard", "dashboard", body)
 
@@ -1540,8 +1740,9 @@ def render_history():
             row_status = _e(t.get("status", ""))
             row_ticker = _e(_ticker(t["ticker"]))
             row_reason = _e(t.get("exit_reason", ""))
+            row_exit_date = t.get("exit_date", "") or ""
             rows += f'''
-            <tr class="hover:bg-blue-50/50 transition border-b border-gray-100 history-row" data-trade-id="{trade_id}" data-horizon="{row_horizon}" data-status="{row_status}" data-ticker="{row_ticker}" data-reason="{row_reason}">
+            <tr class="hover:bg-blue-50/50 transition border-b border-gray-100 history-row" data-trade-id="{trade_id}" data-horizon="{row_horizon}" data-status="{row_status}" data-ticker="{row_ticker}" data-reason="{row_reason}" data-exit-date="{row_exit_date}">
               <td class="px-3 py-3">
                 <input type="checkbox" class="trade-checkbox w-4 h-4 rounded border-gray-300 text-blue-600 cursor-pointer" value="{trade_id}" data-ticker="{row_ticker}">
               </td>
@@ -1700,6 +1901,7 @@ def render_history():
           document.body.appendChild(form);
           form.submit();
         }}
+
         </script>'''
 
     body = f'''
@@ -1841,7 +2043,7 @@ def _render_index_card(label, ticker, size="normal"):
     """Render a single index card. Simple: just use latest 2 available data points."""
     try:
         # Get last 30 days of data - guaranteed to have at least 2 points
-        data = yf.download(ticker, period="30d", progress=False, interval="1d")
+        data = yf.download(ticker, period="30d", progress=False, interval="1d", multi_level_index=False)
         
         if data.empty or len(data) < 2:
             return f'''
@@ -1850,12 +2052,7 @@ def _render_index_card(label, ticker, size="normal"):
               <div class="mt-2 text-gray-400 text-xs">No data available</div>
             </div>'''
         
-        close_col = data["Close"]
-        if hasattr(close_col, 'columns'):
-            close_col = close_col.iloc[:, 0]
-        
-        # SIMPLE: Just use the last 2 rows (most recent data available from yfinance)
-        current = float(close_col.iloc[-1])
+        current = float(data["Close"].iloc[-1])
         prev_close = float(close_col.iloc[-2])
         pct_change = ((current - prev_close) / prev_close) * 100
 
@@ -3634,6 +3831,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload.encode("utf-8"))
             return
 
+        if path == "api/stats-by-date":
+            # Date-range performance analytics endpoint
+            try:
+                qs = urllib.parse.parse_qs(parsed.query)
+                from_date = qs.get("from", [None])[0]
+                to_date = qs.get("to", [None])[0]
+                if not from_date or not to_date:
+                    raise ValueError("Both 'from' and 'to' query parameters are required")
+                # Validate date format
+                datetime.strptime(from_date, "%Y-%m-%d")
+                datetime.strptime(to_date, "%Y-%m-%d")
+                result = q_stats_for_range(from_date, to_date)
+                payload = json.dumps(result, default=str)
+                self.send_response(200)
+            except ValueError as ve:
+                payload = json.dumps({"error": str(ve)})
+                self.send_response(400)
+            except Exception as e:
+                payload = json.dumps({"error": str(e)})
+                self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(payload.encode("utf-8"))
+            return
+
         if path == "api/short-trades":
             # Active SHORT_1d positions JSON endpoint
             try:
@@ -3907,7 +4130,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if _HAS_YF:
                 # Test a quick price fetch
                 try:
-                    test_data = yf.download("SBIN.NS", period="1d", progress=False)
+                    test_data = yf.download("SBIN.NS", period="1d", progress=False, multi_level_index=False)
                     health_status["price_test"] = "✅ SUCCESS" if not test_data.empty else "❌ Empty data"
                 except Exception as e:
                     health_status["price_test"] = f"❌ ERROR: {e}"

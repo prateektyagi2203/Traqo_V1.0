@@ -499,12 +499,9 @@ def _batch_fetch_prices(tickers: list) -> dict:
         import yfinance as yf
         for ticker in tickers:
             try:
-                df = yf.download(ticker, period="5d", progress=False, interval="1d")
+                df = yf.download(ticker, period="5d", progress=False, interval="1d", multi_level_index=False)
                 if df is not None and not df.empty:
-                    close_col = df["Close"]
-                    if hasattr(close_col, "columns"):
-                        close_col = close_col.iloc[:, 0]
-                    prices[ticker] = float(close_col.iloc[-1])
+                    prices[ticker] = float(df["Close"].iloc[-1])
             except Exception as e:
                 log.debug(f"Price fetch failed for {ticker}: {e}")
     except ImportError:

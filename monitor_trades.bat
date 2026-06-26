@@ -5,5 +5,7 @@ REM Works from any install location — uses the batch file's own directory.
 
 cd /d "%~dp0"
 call .venv\Scripts\activate.bat
+python global_sentiment.py
 python paper_trader.py monitor
+python paper_trader.py risk_check
 python paper_trader.py feedback

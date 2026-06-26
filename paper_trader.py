@@ -80,6 +80,8 @@ from trading_config import (
     is_tradeable_instrument,
     is_tradeable_pattern,
     PATTERN_BULL_REGIME_ONLY,
+    BEARISH_SCORE_YELLOW_ALERT,
+    MINUTE_REPLAY_ENABLED,
 )
 
 # FIX #1: Import meta-classifier for secondary filtering
@@ -129,6 +131,7 @@ except ImportError:
 DB_PATH = "paper_trades/paper_trades.db"
 LOG_DIR = "paper_trades/logs"
 PENDING_SIGNALS_FILE = "paper_trades/pending_signals.json"
+OVERNIGHT_SCORE_FILE = "overnight_bearish_score.json"
 os.makedirs("paper_trades", exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -362,8 +365,8 @@ def get_market_regime(scan_date: date) -> dict:
     try:
         # Get NIFTY 50 data
         end_date = scan_date + timedelta(days=1)
-        nifty = yf.download("^NSEI", start=scan_date - timedelta(days=100), 
-                           end=end_date, progress=False, quiet=True)
+        nifty = yf.download("^NSEI", start=scan_date - timedelta(days=100),
+                           end=end_date, progress=False, multi_level_index=False)
         
         if nifty.empty or len(nifty) < 10:
             return {"trend": "unknown", "daily_return": 0.0, "is_declining": False}
@@ -579,6 +582,8 @@ class PaperTradeDB:
                 exit_reason TEXT,
                 actual_return_pct REAL,
                 indicators_json TEXT,
+                entry_regime TEXT DEFAULT 'neutral',
+                entry_bearish_score REAL DEFAULT NULL,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
                 UNIQUE(ticker, horizon_days, entry_date)
@@ -661,8 +666,9 @@ class PaperTradeDB:
                     patterns, entry_price, target_price, sl_price,
                     target_pct, sl_pct, rr_ratio,
                     predicted_win_rate, predicted_pf, confidence, n_matches, match_tier,
-                    entry_date, expiry_date, status, indicators_json, entry_regime
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?)
+                    entry_date, expiry_date, status, indicators_json, entry_regime,
+                    entry_bearish_score
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,?)
             """, (
                 trade["ticker"], trade.get("instrument"), trade.get("sector"),
                 trade["direction"], trade["horizon_days"], trade.get("horizon_label"),
@@ -674,6 +680,7 @@ class PaperTradeDB:
                 trade["entry_date"], trade["expiry_date"],
                 json.dumps(trade.get("indicators", {})),
                 trade.get("entry_regime", "neutral"),
+                trade.get("entry_bearish_score"),
             ))
             self.conn.commit()
             return cur.lastrowid
@@ -1018,12 +1025,57 @@ class PaperTrader:
         # STEP 0b: Load overnight bearish score
         # ---------------------------------------------------------------
         try:
+            if HAVE_GLOBAL_SENTIMENT and not os.path.exists(OVERNIGHT_SCORE_FILE):
+                # Prevent silent SAFE fallback when overnight file is missing.
+                gsm = GlobalSentimentMonitor()
+                score, _ = gsm.save_overnight_score(filepath=OVERNIGHT_SCORE_FILE)
+                log.warning(
+                    f"[STARTUP] Missing overnight score snapshot. Generated live score: {score}/100"
+                )
+
             self.current_bearish_score = get_overnight_bearish_score() if HAVE_GLOBAL_SENTIMENT else 30
             score = self.current_bearish_score
             label = "RED ALERT" if score >= 70 else "YELLOW" if score >= 40 else "SAFE"
             log.info(f"[STARTUP] Overnight bearish score: {score}/100 [{label}]")
         except Exception:
             self.current_bearish_score = 30
+
+        # ---------------------------------------------------------------
+        # STEP 0c: Minute-level replay for missed intraday protection
+        # Covers up to 5 trading days of offline history (yfinance 1m limit).
+        # ---------------------------------------------------------------
+        if MINUTE_REPLAY_ENABLED:
+            try:
+                from minute_replay import run_minute_replay_on_startup
+                open_trades_for_replay = self.db.get_open_trades()
+                cur_r = self.db.conn.execute("SELECT MAX(scan_date) FROM scan_log")
+                row_r = cur_r.fetchone()
+                last_scan_for_replay = (
+                    date.fromisoformat(row_r[0]) if row_r and row_r[0] else None
+                )
+                replay_result = run_minute_replay_on_startup(
+                    open_trades_for_replay,
+                    last_scan_for_replay,
+                    db_path=self.db.db_path,
+                )
+                if (replay_result.get("direct_closes") or
+                        replay_result.get("pending_exits") or
+                        replay_result.get("pending_trims")):
+                    log.info(
+                        f"[MINUTE REPLAY] Closes={replay_result.get('direct_closes', 0)}, "
+                        f"Exits={replay_result.get('pending_exits', 0)}, "
+                        f"Trims={replay_result.get('pending_trims', 0)}"
+                    )
+                    # Flush replay decisions immediately — don't wait for next startup
+                    if HAVE_GLOBAL_SENTIMENT:
+                        flush_r = process_pending_trims_on_startup()
+                        if flush_r.get("executed", 0):
+                            log.info(
+                                f"[MINUTE REPLAY FLUSH] {flush_r['executed']} "
+                                f"decision(s) executed in same session"
+                            )
+            except Exception as e:
+                log.warning(f"[MINUTE REPLAY] Non-critical: {e}")
 
         today = date.today()
         summary = {
@@ -1059,6 +1111,18 @@ class PaperTrader:
         # 3b. TIER 1: Position risk assessment on remaining open positions
         risk_summary = self._run_position_risk_check(today)
         summary["risk_check"] = risk_summary
+
+        # 3c. Flush any PENDING decisions just logged by the risk check above
+        if HAVE_GLOBAL_SENTIMENT:
+            try:
+                flush_results = process_pending_trims_on_startup()
+                if flush_results.get("executed", 0):
+                    log.info(
+                        f"[SAME-RUN FLUSH] {flush_results['executed']} "
+                        f"trim/exit(s) executed immediately after risk check"
+                    )
+            except Exception as e:
+                log.warning(f"[SAME-RUN FLUSH] Failed: {e}")
 
         # 4. DAILY REPORT
         self._generate_daily_report(today)
@@ -1115,11 +1179,9 @@ class PaperTrader:
             try:
                 start_str = (check_date - timedelta(days=3)).strftime("%Y-%m-%d")
                 end_str = (check_date + timedelta(days=3)).strftime("%Y-%m-%d")
-                df = yf.download(trade["ticker"], start=start_str, end=end_str, progress=False)
+                df = yf.download(trade["ticker"], start=start_str, end=end_str, progress=False, multi_level_index=False)
                 if df.empty:
                     continue
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [c[0] for c in df.columns]
                 df.index = pd.to_datetime(df.index).date
                 if check_date not in df.index:
                     continue
@@ -1868,13 +1930,42 @@ class PaperTrader:
         if approved_indices is None:
             approved_indices = list(range(len(signals)))
 
+        # ── YELLOW ALERT gate: block new BULLISH entries when score >= 40 ──
+        entry_bearish_score = 30
+        block_bullish_entries = False
+        if HAVE_GLOBAL_SENTIMENT:
+            try:
+                entry_bearish_score = get_overnight_bearish_score()
+                if entry_bearish_score >= BEARISH_SCORE_YELLOW_ALERT:
+                    block_bullish_entries = True
+                    n_bullish = sum(
+                        1 for i in approved_indices
+                        if 0 <= i < len(signals) and
+                        signals[i].get("direction", "").upper() == "BULLISH"
+                    )
+                    if n_bullish:
+                        log.warning(
+                            f"[YELLOW ALERT] Bearish score={entry_bearish_score} "
+                            f">= {BEARISH_SCORE_YELLOW_ALERT} — "
+                            f"blocking {n_bullish} BULLISH entry/entries"
+                        )
+            except Exception as e:
+                log.warning(f"[YELLOW ALERT] Score gate check failed: {e}")
+
         entered = 0
         skipped = 0
         for idx in approved_indices:
             if idx < 0 or idx >= len(signals):
                 continue
             sig = signals[idx]
+            # Block BULLISH entries when bearish score >= YELLOW_ALERT
+            if block_bullish_entries and sig.get("direction", "").upper() == "BULLISH":
+                log.info(f"  BLOCKED (YELLOW score={entry_bearish_score}): "
+                         f"{sig['ticker']} {sig.get('horizon_label', '')}")
+                skipped += 1
+                continue
             trade = {k: v for k, v in sig.items() if k not in ("skip_reasons", "status")}
+            trade["entry_bearish_score"] = entry_bearish_score  # store score at entry time
             row_id = self.db.insert_trade(trade)
             if row_id:
                 entered += 1
@@ -1905,11 +1996,9 @@ class PaperTrader:
     def _analyse_ticker(self, ticker: str) -> Optional[dict]:
         """Analyse a single ticker for signals across all horizons."""
         try:
-            df = yf.download(ticker, period="6mo", interval="1d", progress=False)
+            df = yf.download(ticker, period="6mo", interval="1d", progress=False, multi_level_index=False)
             if df is None or df.empty or len(df) < 50:
                 return None
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [c[0] for c in df.columns]
             df = df.dropna()
         except Exception:
             return None
@@ -2061,11 +2150,9 @@ class PaperTrader:
                 earliest = min(date.fromisoformat(t["entry_date"]) for t in trades)
                 start_str = (earliest - timedelta(days=3)).strftime("%Y-%m-%d")
                 end_str = (check_date + timedelta(days=1)).strftime("%Y-%m-%d")
-                df = yf.download(ticker, start=start_str, end=end_str, progress=False)
+                df = yf.download(ticker, start=start_str, end=end_str, progress=False, multi_level_index=False)
                 if df.empty:
                     continue
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [c[0] for c in df.columns]
                 df.index = pd.to_datetime(df.index).date
 
                 for trade in trades:
@@ -2166,11 +2253,9 @@ class PaperTrader:
                 if trade is None:
                     continue
                 try:
-                    df = yf.download(trade["ticker"], period="5d", progress=False, quiet=True)
+                    df = yf.download(trade["ticker"], period="5d", progress=False, multi_level_index=False)
                     if df is None or df.empty:
                         continue
-                    if isinstance(df.columns, pd.MultiIndex):
-                        df.columns = [c[0] for c in df.columns]
                     last_close = float(df["Close"].iloc[-1])
                     ret = self._calc_return(trade, last_close)
                     self.db.close_trade(
@@ -2270,11 +2355,9 @@ class PaperTrader:
                 earliest = min(date.fromisoformat(t["entry_date"]) for t in trades)
                 start_str = (earliest - timedelta(days=3)).strftime("%Y-%m-%d")
                 end_str = (check_date + timedelta(days=1)).strftime("%Y-%m-%d")
-                df = yf.download(ticker, start=start_str, end=end_str, progress=False)
+                df = yf.download(ticker, start=start_str, end=end_str, progress=False, multi_level_index=False)
                 if df.empty:
                     continue
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [c[0] for c in df.columns]
                 df.index = pd.to_datetime(df.index).date
 
                 for trade in trades:
@@ -2971,6 +3054,73 @@ class PaperTrader:
         else:
             log.info("No new outcomes for RAG")
 
+        # ── Feed bearish trim/exit outcomes to RAG ──────────────────────────────
+        # Patterns that were protected by bearish exits should be penalised so
+        # RAG reduces confidence for those patterns in future bear markets.
+        if HAVE_GLOBAL_SENTIMENT:
+            try:
+                import sqlite3 as _sqlite3
+                _bear_conn = _sqlite3.connect(DB_PATH)
+                _bear_conn.row_factory = _sqlite3.Row
+                bear_rows = _bear_conn.execute("""
+                    SELECT btd.position_ticker, btd.trim_reason,
+                           btd.decision_bearish_score, btd.entry_bearish_score,
+                           btd.created_at,
+                           t.patterns, t.horizon_label, t.direction,
+                           t.entry_price, t.exit_price, t.actual_return_pct, t.sector
+                    FROM bearish_trim_decisions btd
+                    JOIN trades t ON btd.position_id = t.id
+                    WHERE btd.execution_status IN ('EXECUTED', 'EXECUTED_FULL_EXIT')
+                      AND btd.created_at > datetime('now', '-7 days')
+                      AND t.direction = 'BULLISH'
+                """).fetchall()
+                _bear_conn.close()
+
+                bear_new = 0
+                for br in bear_rows:
+                    raw_patterns = br["patterns"] or "[]"
+                    try:
+                        import ast as _ast
+                        pats = _ast.literal_eval(raw_patterns) if raw_patterns.startswith("[") else [raw_patterns]
+                    except Exception:
+                        pats = [raw_patterns] if raw_patterns else []
+
+                    ret_val = br["actual_return_pct"] or 0
+                    entry = {
+                        "ticker":            br["position_ticker"],
+                        "patterns":          pats,
+                        "horizon_label":     br["horizon_label"] or "",
+                        "direction":         br["direction"] or "BULLISH",
+                        "outcome":           "win" if ret_val > 0 else "loss",
+                        "actual_return_pct": ret_val,
+                        "exit_reason":       f"bearish_exit: {br['trim_reason'] or ''}",
+                        "indicators_at_entry": {},
+                        "notes":             (
+                            f"Bearish exit — score={br['decision_bearish_score']}, "
+                            f"entry_score={br['entry_bearish_score']}"
+                        ),
+                        "timestamp":         br["created_at"] or "",
+                        "sector":            br["sector"] or "",
+                        "source":            "bearish_trim",
+                    }
+                    # Deduplicate: skip if already in feedback log
+                    key = f"{br['position_ticker']}_{br['created_at']}"
+                    already = any(
+                        e.get("ticker") == br["position_ticker"] and
+                        e.get("timestamp") == (br["created_at"] or "") and
+                        e.get("source") == "bearish_trim"
+                        for e in existing
+                    )
+                    if not already:
+                        existing.append(entry)
+                        bear_new += 1
+
+                if bear_new:
+                    _save_json(FEEDBACK_FILE, existing)
+                    log.info(f"[RAG FEED] Fed {bear_new} bearish exit(s) to feedback")
+            except Exception as _e:
+                log.warning(f"[RAG FEED] Bearish exit feedback failed: {_e}")
+
         # Always regenerate learnings (schema may have changed, decay weights shift daily)
         if len(existing) >= 3:
             _update_learnings(existing)
@@ -3011,6 +3161,11 @@ if __name__ == "__main__":
             log.info("No pending signals to discard")
     elif cmd == "monitor":
         engine.monitor_open_positions()
+        summary = engine._run_position_risk_check(date.today())
+        exits = summary.get("action_counts", {}).get("EXIT IMMEDIATELY", 0)
+        reduces = summary.get("action_counts", {}).get("REDUCE 50%", 0)
+        holds = summary.get("action_counts", {}).get("HOLD", 0)
+        print(f"\nRisk Summary: {exits} EXIT, {reduces} REDUCE, {holds} HOLD")
     elif cmd == "risk_check":
         # Tier-1 position risk assessment
         summary = engine._run_position_risk_check(date.today())

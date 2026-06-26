@@ -100,7 +100,7 @@ class StartupCheckpoint:
             row_id = cur.lastrowid
             log.info(
                 f"[TRIM DECISION] Logged #{row_id}: {position_ticker} "
-                f"@ {decision_price:.2f}, score={bearish_score:.0f}"
+                f"@ {decision_price:.2f}, score={bearish_score if bearish_score is not None else 'N/A'}"
             )
             return row_id
         except Exception as e:
@@ -185,19 +185,52 @@ class StartupCheckpoint:
                 qty_to_trim = max(1, int(row['quantity'] * (trim_pct / 100)))
                 new_qty     = row['quantity'] - qty_to_trim
 
-                conn.execute(
-                    "UPDATE trades SET quantity = ? WHERE id = ?",
-                    (new_qty, position_id)
-                )
+                # With qty=1, any partial trim becomes a full exit (avoid ghost qty=0)
+                if trim_pct >= 100 or new_qty <= 0:
+                    # FULL EXIT — properly close trade; avoid ghost quantity=0 positions
+                    entry_row = conn.execute(
+                        "SELECT entry_price, direction FROM trades WHERE id = ?",
+                        (position_id,)
+                    ).fetchone()
+                    if entry_row:
+                        ep        = float(entry_row['entry_price'])
+                        direction = (entry_row['direction'] or 'BULLISH').upper()
+                        ret = ((ep - decision_price) / ep * 100
+                               if direction == 'BEARISH'
+                               else (decision_price - ep) / ep * 100)
+                        trade_status = 'WON' if ret > 0 else 'LOST'
+                    else:
+                        ret          = 0.0
+                        trade_status = 'LOST'
+
+                    conn.execute(
+                        """UPDATE trades
+                               SET status=?, exit_price=?, exit_date=?,
+                                   exit_reason=?, actual_return_pct=?,
+                                   updated_at=datetime('now')
+                             WHERE id=?""",
+                        (trade_status, decision_price,
+                         datetime.now().strftime('%Y-%m-%d'),
+                         f'bearish_full_exit (decision @ {decision_ts})',
+                         ret, position_id),
+                    )
+                    exec_status = 'EXECUTED_FULL_EXIT'
+                else:
+                    conn.execute(
+                        "UPDATE trades SET quantity = ? WHERE id = ?",
+                        (new_qty, position_id)
+                    )
+                    exec_status = 'EXECUTED'
 
                 conn.execute('''
                     UPDATE bearish_trim_decisions
-                    SET execution_status    = 'EXECUTED',
+                    SET execution_status    = ?,
                         execution_timestamp = ?,
                         execution_price     = ?,
                         notes               = ?
                     WHERE id = ?
                 ''', (
+                    exec_status,
                     datetime.now().isoformat(),
                     decision_price,
                     f"Trimmed {qty_to_trim} units at decision price {decision_price:.2f} "
@@ -208,7 +241,7 @@ class StartupCheckpoint:
 
                 results['executed'] += 1
                 results['details'].append({
-                    'status': 'EXECUTED',
+                    'status': exec_status,
                     'ticker': ticker,
                     'trim_id': trim_id,
                     'qty_trimmed': qty_to_trim,
@@ -217,7 +250,7 @@ class StartupCheckpoint:
                 })
                 log.warning(
                     f"[TRIM EXECUTED] #{trim_id}: {ticker}, "
-                    f"qty={qty_to_trim} @ {decision_price:.2f} "
+                    f"status={exec_status}, qty={qty_to_trim} @ {decision_price:.2f} "
                     f"(decided {decision_ts})"
                 )
 
