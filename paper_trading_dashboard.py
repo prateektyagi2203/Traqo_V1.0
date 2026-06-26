@@ -23,6 +23,13 @@ from datetime import date, datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
+# ---- ENCODING FIX: prevent UnicodeEncodeError on Windows when stdout/stderr is a CP1252 pipe ----
+# This is safe on all platforms — reconfigure only runs if the stream supports it.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 # ---- YFINANCE DYNAMIC IMPORT ----
 _HAS_YF = False
 yf = None
@@ -220,6 +227,15 @@ def q_stats():
     pf = (abs(avg_w * wins) / abs(avg_l * losses)) if (losses and avg_l) else 0
     last_scan = c.execute("SELECT MAX(scan_date) FROM scan_log").fetchone()[0] or "Never"
     today_entered = c.execute("SELECT COUNT(*) FROM trades WHERE entry_date=?", (date.today().isoformat(),)).fetchone()[0]
+    # D6: Significance progress — count patterns with >= 30 closed trades (Wilson CI threshold)
+    SIG_THRESHOLD = 30
+    pat_counts = c.execute(
+        "SELECT patterns, COUNT(*) as n FROM trades "
+        "WHERE status NOT IN ('OPEN','CANCELLED') AND patterns IS NOT NULL "
+        "GROUP BY patterns"
+    ).fetchall()
+    total_patterns = len(pat_counts)
+    significant_patterns = sum(1 for _, n in pat_counts if n >= SIG_THRESHOLD)
     c.close()
     return {
         "open_trades": open_n, "closed_trades": closed_n, "total_trades": open_n + closed_n,
@@ -227,6 +243,12 @@ def q_stats():
         "avg_win_pct": round(avg_w, 2), "avg_loss_pct": round(avg_l, 2),
         "profit_factor": round(pf, 2), "total_return_pct": round(tot_ret, 2),
         "last_scan": last_scan, "today_entered": today_entered,
+        "significance_progress": {
+            "significant_patterns": significant_patterns,
+            "total_patterns": total_patterns,
+            "threshold": SIG_THRESHOLD,
+            "pct": round(significant_patterns / total_patterns * 100, 1) if total_patterns else 0,
+        },
     }
 
 
@@ -452,7 +474,7 @@ def q_stats_by_stock():
                AVG(actual_return_pct) as avg_ret,
                SUM(actual_return_pct) as total_ret
         FROM trades WHERE status NOT IN ('OPEN','CANCELLED')
-        GROUP BY ticker ORDER BY total DESC LIMIT 30
+        GROUP BY ticker ORDER BY total DESC
     """).fetchall()]
     for r in rows:
         t = r["wins"] + r["losses"]
@@ -665,6 +687,28 @@ def _date(d):
         return str(d)
 
 
+def _significance_progress_bar(sp: dict) -> str:
+    """D6: Render a progress bar showing how many patterns have reached statistical significance (n>=30)."""
+    if not sp:
+        return ""
+    sig = sp.get("significant_patterns", 0)
+    total = sp.get("total_patterns", 0)
+    threshold = sp.get("threshold", 30)
+    pct = sp.get("pct", 0)
+    bar_w = min(100, int(pct))
+    color = "bg-emerald-500" if pct >= 60 else "bg-amber-400" if pct >= 30 else "bg-red-400"
+    return f'''<div class="glass rounded-xl border border-gray-200 shadow-sm p-4">
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-xs font-semibold text-gray-600 uppercase tracking-wider">Statistical Significance Progress</span>
+        <span class="text-xs text-gray-400">{sig}/{total} patterns &ge;{threshold} trades</span>
+      </div>
+      <div class="w-full bg-gray-100 rounded-full h-3">
+        <div class="{color} h-3 rounded-full transition-all" style="width:{bar_w}%"></div>
+      </div>
+      <p class="text-xs text-gray-400 mt-1">{pct:.1f}% of seen patterns have enough data for Wilson CI confidence</p>
+    </div>'''
+
+
 def _ticker(t):
     return str(t).replace(".NS", "").replace(".BO", "") if t else ""
 
@@ -702,7 +746,7 @@ def fetch_live_prices(tickers: list) -> dict:
     yf_syms = []
     for t in unique:
         sym = t.strip()
-        if not sym.endswith(".NS") and not sym.endswith(".BO"):
+        if not sym.endswith(".NS") and not sym.endswith(".BO") and not sym.startswith("^"):
             sym = sym + ".NS"
         yf_syms.append(sym)
     print(f"[LIVE PRICE] Fetching {len(yf_syms)} tickers: {yf_syms[:5]}...")
@@ -909,6 +953,9 @@ def render_dashboard():
       {stat_card("Total Return", _pct(s["total_return_pct"]), "", "green" if s["total_return_pct"] >= 0 else "red")}
       {stat_card("Last Scan", _date(s["last_scan"]) if s["last_scan"] != "Never" else "Never", "", "indigo")}
       {stat_card("Total Trades", s["total_trades"], "all time", "cyan")}
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-1 gap-4 mt-4">
+      {_significance_progress_bar(s.get("significance_progress", {}))}
     </div>'''
 
     date_range_html = '''
@@ -1949,14 +1996,20 @@ def render_performance():
               <td class="px-4 py-2 text-right text-gray-600">{h["total"]}</td>
               <td class="px-4 py-2 text-right text-emerald-600">{h["wins"]}</td>
               <td class="px-4 py-2 text-right text-red-600">{h["losses"]}</td>
-              <td class="px-4 py-2 text-right font-semibold text-gray-800">{h["win_rate"]}%</td>
-              <td class="px-4 py-2 text-right text-emerald-600">{_pct(h.get("avg_win"))}</td>
-              <td class="px-4 py-2 text-right text-red-600">{_pct(h.get("avg_loss"))}</td>
+              <td class="px-4 py-2 text-right font-semibold text-gray-800" data-val="{h["win_rate"]}">{h["win_rate"]}%</td>
+              <td class="px-4 py-2 text-right text-emerald-600" data-val="{round(h.get('avg_win') or 0, 4)}">{_pct(h.get("avg_win"))}</td>
+              <td class="px-4 py-2 text-right text-red-600" data-val="{round(h.get('avg_loss') or 0, 4)}">{_pct(h.get("avg_loss"))}</td>
             </tr>'''
         hz_html = f'''
         <div class="glass rounded-xl p-6 mb-6">
-          <h3 class="text-lg font-semibold text-gray-800 mb-4">Performance by Horizon</h3>
-          <table class="w-full text-sm"><thead><tr class="border-b border-gray-200">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-gray-800">Performance by Horizon</h3>
+            <button onclick="hzDownload()" title="Download as Excel/CSV" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg transition-colors shadow-sm">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              Download Excel
+            </button>
+          </div>
+          <table id="hz-table" class="w-full text-sm"><thead><tr class="border-b border-gray-200">
             <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Horizon</th>
             <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Trades</th>
             <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Wins</th>
@@ -1965,7 +2018,40 @@ def render_performance():
             <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Avg Win</th>
             <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Avg Loss</th>
           </tr></thead><tbody>{hz_rows}</tbody></table>
-        </div>'''
+        </div>
+        <script>
+        window.hzDownload = function() {{
+          var headers = ['Horizon','Trades','Wins','Losses','Win Rate %','Avg Win %','Avg Loss %'];
+          var rows = [headers];
+          document.querySelectorAll('#hz-table tbody tr').forEach(function(tr) {{
+            var cells = tr.querySelectorAll('td');
+            rows.push([
+              cells[0].textContent.trim(),
+              cells[1].textContent.trim(),
+              cells[2].textContent.trim(),
+              cells[3].textContent.trim(),
+              cells[4].getAttribute('data-val') || '',
+              cells[5].getAttribute('data-val') || '',
+              cells[6].getAttribute('data-val') || ''
+            ]);
+          }});
+          var csv = rows.map(function(r) {{
+            return r.map(function(v) {{
+              var s = String(v);
+              return (s.indexOf(',')>=0||s.indexOf('"')>=0||s.indexOf('\\n')>=0)
+                ? '"'+s.replace(/"/g,'""')+'"' : s;
+            }}).join(',');
+          }}).join('\\r\\n');
+          var blob = new Blob(['\\uFEFF'+csv], {{type:'text/csv;charset=utf-8;'}});
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'horizon_performance_'+new Date().toISOString().slice(0,10)+'.csv';
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }};
+        </script>'''
 
     # Pattern table
     pat_html = ""
@@ -1978,20 +2064,59 @@ def render_performance():
               <td class="px-4 py-2 text-gray-800 text-xs">{_e((p.get("patterns","") or "").replace(",", " · "))}</td>
               <td class="px-4 py-2 text-right text-gray-600">{p["total"]}</td>
               <td class="px-4 py-2 text-right text-gray-600">{p["wins"]} / {p["losses"]}</td>
-              <td class="px-4 py-2 text-right font-semibold text-gray-800">{p["win_rate"]}%</td>
-              <td class="px-4 py-2 text-right font-mono {ret_cls}">{_pct(p.get("avg_ret"))}</td>
+              <td class="px-4 py-2 text-right font-semibold text-gray-800" data-val="{p["win_rate"]}">{p["win_rate"]}%</td>
+              <td class="px-4 py-2 text-right font-mono {ret_cls}" data-val="{round(p.get('avg_ret') or 0, 4)}">{_pct(p.get("avg_ret"))}</td>
             </tr>'''
         pat_html = f'''
         <div class="glass rounded-xl p-6 mb-6">
-          <h3 class="text-lg font-semibold text-gray-800 mb-4">Performance by Pattern</h3>
-          <table class="w-full text-sm"><thead><tr class="border-b border-gray-200">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-gray-800">Performance by Pattern</h3>
+            <button onclick="patDownload()" title="Download as Excel/CSV" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg transition-colors shadow-sm">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              Download Excel
+            </button>
+          </div>
+          <table id="pat-table" class="w-full text-sm"><thead><tr class="border-b border-gray-200">
             <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Pattern</th>
             <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Trades</th>
             <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">W / L</th>
             <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Win Rate</th>
             <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Avg Return</th>
           </tr></thead><tbody>{pat_rows}</tbody></table>
-        </div>'''
+        </div>
+        <script>
+        window.patDownload = function() {{
+          var headers = ['Pattern','Trades','W','L','Win Rate %','Avg Return %'];
+          var rows = [headers];
+          document.querySelectorAll('#pat-table tbody tr').forEach(function(tr) {{
+            var cells = tr.querySelectorAll('td');
+            var wl = cells[2].textContent.trim().split(' / ');
+            rows.push([
+              cells[0].textContent.trim(),
+              cells[1].textContent.trim(),
+              wl[0] || '',
+              wl[1] || '',
+              cells[3].getAttribute('data-val') || '',
+              cells[4].getAttribute('data-val') || ''
+            ]);
+          }});
+          var csv = rows.map(function(r) {{
+            return r.map(function(v) {{
+              var s = String(v);
+              return (s.indexOf(',')>=0||s.indexOf('"')>=0||s.indexOf('\\n')>=0)
+                ? '"'+s.replace(/"/g,'""')+'"' : s;
+            }}).join(',');
+          }}).join('\\r\\n');
+          var blob = new Blob(['\\uFEFF'+csv], {{type:'text/csv;charset=utf-8;'}});
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'pattern_performance_'+new Date().toISOString().slice(0,10)+'.csv';
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }};
+        </script>'''
 
     # Stock table
     stk_html = ""
@@ -2000,27 +2125,110 @@ def render_performance():
         for st in stock_stats:
             avg_cls = "text-emerald-600" if (st.get("avg_ret") or 0) >= 0 else "text-red-600"
             tot_cls = "text-emerald-600" if (st.get("total_ret") or 0) >= 0 else "text-red-600"
+            avg_val = round(st.get("avg_ret") or 0, 4)
+            tot_val = round(st.get("total_ret") or 0, 4)
             stk_rows += f'''
             <tr class="hover:bg-blue-50/50 border-b border-gray-100">
               <td class="px-4 py-2 font-semibold text-gray-800">{_e(_ticker(st["ticker"]))}</td>
-              <td class="px-4 py-2 text-right text-gray-600">{st["total"]}</td>
+              <td class="px-4 py-2 text-right text-gray-600" data-val="{st["total"]}">{st["total"]}</td>
               <td class="px-4 py-2 text-right text-gray-600">{st["wins"]} / {st["losses"]}</td>
-              <td class="px-4 py-2 text-right font-semibold text-gray-800">{st["win_rate"]}%</td>
-              <td class="px-4 py-2 text-right font-mono {avg_cls}">{_pct(st.get("avg_ret"))}</td>
-              <td class="px-4 py-2 text-right font-mono font-semibold {tot_cls}">{_pct(st.get("total_ret"))}</td>
+              <td class="px-4 py-2 text-right font-semibold text-gray-800" data-val="{st["win_rate"]}">{st["win_rate"]}%</td>
+              <td class="px-4 py-2 text-right font-mono {avg_cls}" data-val="{avg_val}">{_pct(st.get("avg_ret"))}</td>
+              <td class="px-4 py-2 text-right font-mono font-semibold {tot_cls}" data-val="{tot_val}">{_pct(st.get("total_ret"))}</td>
             </tr>'''
         stk_html = f'''
         <div class="glass rounded-xl p-6 mb-6">
-          <h3 class="text-lg font-semibold text-gray-800 mb-4">Performance by Stock</h3>
-          <table class="w-full text-sm"><thead><tr class="border-b border-gray-200">
-            <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Stock</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Trades</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">W / L</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Win Rate</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Avg Return</th>
-            <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">Total Return</th>
-          </tr></thead><tbody>{stk_rows}</tbody></table>
-        </div>'''
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-gray-800">Performance by Stock</h3>
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-gray-400">{len(stock_stats)} stocks</span>
+              <button onclick="stkDownload()" title="Download as Excel/CSV" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg transition-colors shadow-sm">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                Download Excel
+              </button>
+            </div>
+          </div>
+          <table id="stk-table" class="w-full text-sm">
+            <thead><tr class="border-b border-gray-200">
+              <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Stock</th>
+              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="1" onclick="stkSort(this)">
+                <span>Trades</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span>
+              </th>
+              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase">W / L</th>
+              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="3" onclick="stkSort(this)">
+                <span>Win Rate</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span>
+              </th>
+              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="4" onclick="stkSort(this)">
+                <span>Avg Return</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span>
+              </th>
+              <th class="px-4 py-2 text-right text-xs text-gray-500 uppercase cursor-pointer select-none group" data-col="5" onclick="stkSort(this)">
+                <span>Total Return</span> <span class="sort-icon text-gray-300 group-hover:text-blue-400">&#8645;</span>
+              </th>
+            </tr></thead>
+            <tbody>{stk_rows}</tbody>
+          </table>
+        </div>
+        <script>
+        (function(){{
+          var _stkCol = -1, _stkDir = 1;
+          window.stkDownload = function() {{
+            var headers = ['Stock','Trades','W','L','Win Rate %','Avg Return %','Total Return %'];
+            var rows = [headers];
+            document.querySelectorAll('#stk-table tbody tr').forEach(function(tr) {{
+              var cells = tr.querySelectorAll('td');
+              var wl = cells[2].textContent.trim().split(' / ');
+              rows.push([
+                cells[0].textContent.trim(),
+                cells[1].textContent.trim(),
+                wl[0] || '',
+                wl[1] || '',
+                cells[3].getAttribute('data-val') || '',
+                cells[4].getAttribute('data-val') || '',
+                cells[5].getAttribute('data-val') || ''
+              ]);
+            }});
+            var csv = rows.map(function(r) {{
+              return r.map(function(v) {{
+                var s = String(v);
+                return (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\\n') >= 0)
+                  ? '"' + s.replace(/"/g, '""') + '"' : s;
+              }}).join(',');
+            }}).join('\\r\\n');
+            var blob = new Blob(['\\uFEFF' + csv], {{type: 'text/csv;charset=utf-8;'}});
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'stock_performance_' + new Date().toISOString().slice(0, 10) + '.csv';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }};
+          window.stkSort = function(th) {{
+            var col = parseInt(th.getAttribute('data-col'));
+            if (_stkCol === col) {{ _stkDir *= -1; }}
+            else {{ _stkCol = col; _stkDir = -1; }}
+            // reset all icons
+            document.querySelectorAll('#stk-table thead th[data-col] .sort-icon').forEach(function(el) {{
+              el.innerHTML = '&#8645;';
+              el.classList.remove('text-blue-500');
+              el.classList.add('text-gray-300');
+            }});
+            var icon = th.querySelector('.sort-icon');
+            icon.innerHTML = _stkDir === -1 ? '&#8595;' : '&#8593;';
+            icon.classList.remove('text-gray-300');
+            icon.classList.add('text-blue-500');
+            var tbody = document.querySelector('#stk-table tbody');
+            var rows = Array.from(tbody.querySelectorAll('tr'));
+            rows.sort(function(a, b) {{
+              var av = parseFloat(a.querySelectorAll('td')[col].getAttribute('data-val')) || 0;
+              var bv = parseFloat(b.querySelectorAll('td')[col].getAttribute('data-val')) || 0;
+              return _stkDir * (bv - av);
+            }});
+            rows.forEach(function(r) {{ tbody.appendChild(r); }});
+          }};
+        }})();
+        </script>'''
 
     empty = ""
     if s["closed_trades"] == 0:
@@ -2029,9 +2237,114 @@ def render_performance():
           <p class="mt-1 text-sm text-gray-400">Analytics will appear once trades are closed</p>
         </div>'''
 
+    # A2 + A3: async-loaded analytics panel (benchmark alpha + bootstrap CI)
+    analytics_html = '''
+    <div class="glass rounded-xl p-6 mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold text-gray-800">Advanced Analytics</h3>
+        <span class="text-xs text-gray-400">Benchmark Alpha &amp; Statistical Confidence</span>
+      </div>
+      <div id="analytics-loading" class="flex items-center gap-2 text-sm text-gray-400 py-4">
+        <svg class="animate-spin h-4 w-4 text-blue-400" viewBox="0 0 24 24" fill="none">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        Loading advanced analytics (fetching Nifty50)...
+      </div>
+      <div id="analytics-content" class="hidden">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- A2: Benchmark Alpha -->
+          <div class="bg-gray-50 rounded-lg p-4">
+            <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Benchmark Alpha vs Nifty50</p>
+            <div class="grid grid-cols-3 gap-3 text-center">
+              <div>
+                <p class="text-xs text-gray-400">Portfolio Return</p>
+                <p id="a2-portfolio" class="text-xl font-bold mt-1 text-gray-800">—</p>
+              </div>
+              <div>
+                <p class="text-xs text-gray-400">Nifty B&amp;H</p>
+                <p id="a2-benchmark" class="text-xl font-bold mt-1 text-gray-600">—</p>
+              </div>
+              <div>
+                <p class="text-xs text-gray-400">Alpha</p>
+                <p id="a2-alpha" class="text-xl font-bold mt-1">—</p>
+              </div>
+            </div>
+            <p id="a2-period" class="text-xs text-gray-400 mt-3 text-center"></p>
+          </div>
+          <!-- A3: Bootstrap CI -->
+          <div class="bg-gray-50 rounded-lg p-4">
+            <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">95% Bootstrap CI (n=<span id="a3-n">—</span> trades)</p>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <p class="text-xs text-gray-400 mb-1">Win Rate</p>
+                <p id="a3-wr" class="text-xl font-bold text-gray-800">—</p>
+                <p id="a3-wr-ci" class="text-xs text-gray-400 mt-0.5">CI: —</p>
+              </div>
+              <div>
+                <p class="text-xs text-gray-400 mb-1">Profit Factor</p>
+                <p id="a3-pf" class="text-xl font-bold text-gray-800">—</p>
+                <p id="a3-pf-ci" class="text-xs text-gray-400 mt-0.5">CI: —</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="analytics-error" class="hidden text-xs text-red-400 py-2"></div>
+    </div>
+    <script>
+    (function() {
+      fetch('/api/analytics')
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('analytics-loading').classList.add('hidden');
+          var ba = data.benchmark_alpha || {};
+          var ci = data.bootstrap_ci || {};
+          if (ba.error && ci.error) {
+            document.getElementById('analytics-error').textContent = 'Analytics: ' + (ba.error || ci.error);
+            document.getElementById('analytics-error').classList.remove('hidden');
+            return;
+          }
+          document.getElementById('analytics-content').classList.remove('hidden');
+          // A2
+          if (!ba.error) {
+            var port = ba.portfolio_return_pct || 0;
+            var bench = ba.benchmark_return_pct || 0;
+            var alpha = ba.alpha_pct || 0;
+            document.getElementById('a2-portfolio').textContent = (port >= 0 ? '+' : '') + port.toFixed(2) + '%';
+            document.getElementById('a2-portfolio').className = 'text-xl font-bold mt-1 ' + (port >= 0 ? 'text-emerald-600' : 'text-red-500');
+            document.getElementById('a2-benchmark').textContent = (bench >= 0 ? '+' : '') + bench.toFixed(2) + '%';
+            document.getElementById('a2-alpha').textContent = (alpha >= 0 ? '+' : '') + alpha.toFixed(2) + '%';
+            document.getElementById('a2-alpha').className = 'text-xl font-bold mt-1 ' + (alpha >= 0 ? 'text-emerald-600' : 'text-red-500');
+            document.getElementById('a2-period').textContent = (ba.first_trade_date || '') + ' → ' + (ba.last_trade_date || '');
+          } else {
+            document.getElementById('a2-portfolio').textContent = 'N/A';
+          }
+          // A3
+          if (!ci.error) {
+            document.getElementById('a3-n').textContent = ci.n_trades || '—';
+            document.getElementById('a3-wr').textContent = (ci.win_rate || 0) + '%';
+            document.getElementById('a3-wr').className = 'text-xl font-bold ' + (ci.win_rate >= 55 ? 'text-emerald-600' : ci.win_rate >= 45 ? 'text-amber-600' : 'text-red-500');
+            document.getElementById('a3-wr-ci').textContent = 'CI: ' + ci.wr_ci_lower + '% – ' + ci.wr_ci_upper + '%';
+            document.getElementById('a3-pf').textContent = (ci.profit_factor || 0).toFixed(2) + 'x';
+            document.getElementById('a3-pf').className = 'text-xl font-bold ' + (ci.profit_factor >= 1.5 ? 'text-emerald-600' : ci.profit_factor >= 1.0 ? 'text-amber-600' : 'text-red-500');
+            document.getElementById('a3-pf-ci').textContent = 'CI: ' + ci.pf_ci_lower + 'x – ' + ci.pf_ci_upper + 'x';
+          } else {
+            document.getElementById('a3-wr').textContent = ci.error;
+          }
+        })
+        .catch(e => {
+          document.getElementById('analytics-loading').classList.add('hidden');
+          document.getElementById('analytics-error').textContent = 'Failed to load analytics: ' + e;
+          document.getElementById('analytics-error').classList.remove('hidden');
+        });
+    })();
+    </script>'''
+
     body = f'''
     <h2 class="text-2xl font-bold text-gray-800 mb-6">Performance Analytics</h2>
     {kpis}
+    {analytics_html}
     {hz_html}
     {pat_html}
     {stk_html}
@@ -3857,8 +4170,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload.encode("utf-8"))
             return
 
+        if path == "api/analytics":
+            # A2 + A3: Benchmark alpha vs Nifty50 and Bootstrap CI on live WR/PF
+            try:
+                from paper_trader import PaperTrader as _PT, PaperTradeDB, DB_PATH
+                pt = _PT.__new__(_PT)
+                pt.db = PaperTradeDB(DB_PATH)
+                alpha = pt.compute_benchmark_alpha()
+                ci = pt.compute_bootstrap_ci()
+                payload = json.dumps({"benchmark_alpha": alpha, "bootstrap_ci": ci}, default=str)
+                self.send_response(200)
+            except Exception as e:
+                payload = json.dumps({"error": str(e)})
+                self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(payload.encode("utf-8"))
+            return
+
         if path == "api/short-trades":
-            # Active SHORT_1d positions JSON endpoint
             try:
                 import sqlite3
                 db_path = "paper_trades/paper_trades.db"
